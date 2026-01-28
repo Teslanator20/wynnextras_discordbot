@@ -21,18 +21,18 @@ RAID_NAMES = {
 }
 
 RAID_EMOJIS = {
-    "NOTG": "<:notg:1466085912520691957>",
-    "NOL": "<:nol:1466086178913779927>",
-    "TCC": "<:tcc:1466086007941365922>",
-    "TNA": "<:tna:1466086122655453377>",
+    "NOTG": "<:notg:1466160820638584885>",
+    "NOL": "<:nol:1466160862296543458>",
+    "TCC": "<:tcc:1466160902037438627>",
+    "TNA": "<:tna:1466160934937432409>",
 }
 
 # Raid emoji IDs for reactions
 RAID_EMOJI_IDS = {
-    "NOTG": 1466085912520691957,
-    "NOL": 1466086178913779927,
-    "TCC": 1466086007941365922,
-    "TNA": 1466086122655453377,
+    "NOTG": 1466160820638584885,
+    "NOL": 1466160862296543458,
+    "TCC": 1466160902037438627,
+    "TNA": 1466160934937432409,
 }
 
 RARITY_ORDER = {"Mythic": 0, "Fabled": 1, "Legendary": 2}
@@ -46,11 +46,11 @@ RARITY_COLORS = {
 
 # Animated aspect emojis
 ASPECT_EMOJIS = {
-    "warrior": "<a:aspect_warrior:1466068961681735974>",
-    "mage": "<a:aspect_mage:1466068918870474868>",
-    "archer": "<a:aspect_archer:1466068869822157031>",
-    "assassin": "<a:aspect_assassin:1466068898964308071>",
-    "shaman": "<a:aspect_shaman:1466068939854446592>",
+    "warrior": "<a:aspect_warrior:1466159515488489605>",
+    "mage": "<a:aspect_mage:1466159736058806345>",
+    "archer": "<a:aspect_archer:1466159282742497475>",
+    "assassin": "<a:aspect_assassin:1466159697416421387>",
+    "shaman": "<a:aspect_shaman:1466159561823227955>",
 }
 
 # Class emojis (static)
@@ -60,6 +60,15 @@ CLASS_EMOJIS = {
     "archer": "<:class_archer:1466120313270964316>",
     "assassin": "<:class_assassin:1466120777324560697>",
     "shaman": "<:class_shaman:1466120243767414936>",
+}
+
+# Class item emojis (for non-maxed aspects)
+CLASS_ITEM_EMOJIS = {
+    "warrior": "<:warrior_item:1466156214151942345>",
+    "mage": "<:mage_item:1466156170522792149>",
+    "archer": "<:archer_item:1466156130865647626>",
+    "assassin": "<:assassin_item:1466156151111553277>",
+    "shaman": "<:shaman_item:1466156194493104457>",
 }
 
 # Max amounts for each rarity
@@ -78,6 +87,31 @@ TIER_WEIGHTS = {
     "Mythic": [20.0, 13.55],      # Tier I->II weight, Tier II->MAX weight
     "Fabled": [10.4, 0.65],       # Tier I->II, Tier II->MAX
     "Legendary": [15.0, 1.5, 0.905], # Tier I->II, II->III, III->MAX
+}
+
+# Valid current dungeons (API has old removed dungeons we don't want to show)
+VALID_DUNGEONS = {
+    # Normal dungeons
+    "Decrepit Sewers",
+    "Eldritch Outlook",
+    "Fallen Factory",
+    "Galleon's Graveyard",
+    "Ice Barrows",
+    "Infested Pit",
+    "Lost Sanctuary",
+    "Sand-Swept Tomb",
+    "Timelost Sanctum",
+    "Undergrowth Ruins",
+    "Underworld Crypt",
+    # Corrupted dungeons
+    "Corrupted Decrepit Sewers",
+    "Corrupted Galleon's Graveyard",
+    "Corrupted Ice Barrows",
+    "Corrupted Infested Pit",
+    "Corrupted Lost Sanctuary",
+    "Corrupted Sand-Swept Tomb",
+    "Corrupted Undergrowth Ruins",
+    "Corrupted Underworld Crypt",
 }
 
 intents = discord.Intents.default()
@@ -125,9 +159,23 @@ async def fetch_gambits():
 
 
 async def fetch_loot_pool(raid_type: str):
+    import time
+    now = time.time()
+
+    # Check cache first
+    if raid_type in _loot_pool_cache:
+        cache_time = _loot_pool_cache_time.get(raid_type, 0)
+        if (now - cache_time) < LOOT_POOL_CACHE_TTL:
+            return _loot_pool_cache[raid_type]
+
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{BASE_URL}/raid/loot-pool?raidType={raid_type}") as resp:
-            return await resp.json() if resp.status == 200 else None
+            if resp.status == 200:
+                data = await resp.json()
+                _loot_pool_cache[raid_type] = data
+                _loot_pool_cache_time[raid_type] = now
+                return data
+            return None
 
 
 async def fetch_player_aspects(player_name: str):
@@ -167,6 +215,11 @@ async def fetch_player_uuid(player_name: str) -> str | None:
 _aspect_class_cache: dict[str, str] = {}
 _aspect_cache_time: float = 0
 ASPECT_CACHE_TTL = 3600  # 1 hour
+
+# Cache for loot pools (raid_type -> data)
+_loot_pool_cache: dict[str, dict] = {}
+_loot_pool_cache_time: dict[str, float] = {}
+LOOT_POOL_CACHE_TTL = 300  # 5 minutes
 
 
 async def get_aspect_class_mapping() -> dict[str, str]:
@@ -345,15 +398,20 @@ def get_weekly_reset_times() -> tuple[int, int]:
 
 
 async def fetch_all_mythics() -> list[dict]:
-    """Fetch mythic aspects from all raids."""
+    """Fetch mythic aspects from all raids (parallel)."""
+    import asyncio
+
+    # Fetch all raids in parallel
+    results = await asyncio.gather(*[fetch_loot_pool(raid_type) for raid_type in RAID_TYPES])
+
     all_mythics = []
-    for raid_type in RAID_TYPES:
-        data = await fetch_loot_pool(raid_type)
+    for raid_type, data in zip(RAID_TYPES, results):
         if data:
             for aspect in data.get("aspects", []):
                 if aspect.get("rarity") == "Mythic":
-                    aspect["raid"] = raid_type
-                    all_mythics.append(aspect)
+                    aspect_copy = aspect.copy()
+                    aspect_copy["raid"] = raid_type
+                    all_mythics.append(aspect_copy)
     return all_mythics
 
 
@@ -390,70 +448,83 @@ async def gambits(interaction: discord.Interaction):
 
 
 class LootPoolView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, original_user_id: int = None):
         super().__init__(timeout=60)
+        self.original_user_id = original_user_id
 
-    @discord.ui.button(label="Raid Loot Pool", style=discord.ButtonStyle.primary, emoji="⚔️")
-    async def raid_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = discord.Embed(
-            title="📦 Select a Raid",
-            description="Choose a raid to view its loot pool:",
-            color=0x5865F2
-        )
-        await interaction.response.edit_message(embed=embed, view=RaidSelectView())
-
-    @discord.ui.button(label="Lootrun (Coming Soon)", style=discord.ButtonStyle.secondary, emoji="🏃", disabled=True)
-    async def lootrun_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        pass
-
-
-class RaidSelectView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=60)
-        select = discord.ui.Select(
-            placeholder="Choose a raid...",
+        # Raid select dropdown
+        raid_select = discord.ui.Select(
+            placeholder="Select Raid...",
             options=[
-                discord.SelectOption(label="Nest of the Grootslangs", value="NOTG", emoji=discord.PartialEmoji(name="notg", id=1466085912520691957)),
-                discord.SelectOption(label="Orphion's Nexus of Light", value="NOL", emoji=discord.PartialEmoji(name="nol", id=1466086178913779927)),
-                discord.SelectOption(label="The Canyon Colossus", value="TCC", emoji=discord.PartialEmoji(name="tcc", id=1466086007941365922)),
-                discord.SelectOption(label="The Nameless Anomaly", value="TNA", emoji=discord.PartialEmoji(name="tna", id=1466086122655453377)),
+                discord.SelectOption(label="Nest of the Grootslangs", value="NOTG", emoji=discord.PartialEmoji(name="notg", id=1466160820638584885)),
+                discord.SelectOption(label="Orphion's Nexus of Light", value="NOL", emoji=discord.PartialEmoji(name="nol", id=1466160862296543458)),
+                discord.SelectOption(label="The Canyon Colossus", value="TCC", emoji=discord.PartialEmoji(name="tcc", id=1466160902037438627)),
+                discord.SelectOption(label="The Nameless Anomaly", value="TNA", emoji=discord.PartialEmoji(name="tna", id=1466160934937432409)),
             ]
         )
-        select.callback = self.select_callback
-        self.add_item(select)
+        raid_select.callback = self.raid_select_callback
+        self.add_item(raid_select)
 
-    async def select_callback(self, interaction: discord.Interaction):
+        # Camp select dropdown (disabled - coming soon)
+        camp_select = discord.ui.Select(
+            placeholder="Select Camp (coming soon)",
+            options=[
+                discord.SelectOption(label="Coming Soon", value="placeholder", emoji=discord.PartialEmoji(name="lootrun", id=1466173956884136188)),
+            ],
+            disabled=True
+        )
+        self.add_item(camp_select)
+
+    async def raid_select_callback(self, interaction: discord.Interaction):
+        if self.original_user_id and interaction.user.id != self.original_user_id:
+            await interaction.response.send_message("Only the person who used the command can use these buttons.", ephemeral=True)
+            return
         raid_type = self.children[0].values[0]
         await interaction.response.defer()
-        await show_raid_pool_edit(interaction, raid_type)
+        await show_raid_pool_edit(interaction, raid_type, original_user_id=self.original_user_id)
 
 
 class RaidButtonsView(discord.ui.View):
-    def __init__(self):
+    def __init__(self, original_user_id: int = None):
         super().__init__(timeout=300)
+        self.original_user_id = original_user_id
 
-    @discord.ui.button(label="NOTG", style=discord.ButtonStyle.primary, custom_id="raid_notg", emoji=discord.PartialEmoji(name="notg", id=1466085912520691957))
+    async def _check_user(self, interaction: discord.Interaction) -> bool:
+        if self.original_user_id and interaction.user.id != self.original_user_id:
+            await interaction.response.send_message("Only the person who used the command can use these buttons.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="NOTG", style=discord.ButtonStyle.primary, custom_id="raid_notg", emoji=discord.PartialEmoji(name="notg", id=1466160820638584885))
     async def notg_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_user(interaction):
+            return
         await interaction.response.defer()
-        await show_raid_pool_edit(interaction, "NOTG")
+        await show_raid_pool_edit(interaction, "NOTG", original_user_id=self.original_user_id)
 
-    @discord.ui.button(label="NOL", style=discord.ButtonStyle.primary, custom_id="raid_nol", emoji=discord.PartialEmoji(name="nol", id=1466086178913779927))
+    @discord.ui.button(label="NOL", style=discord.ButtonStyle.primary, custom_id="raid_nol", emoji=discord.PartialEmoji(name="nol", id=1466160862296543458))
     async def nol_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_user(interaction):
+            return
         await interaction.response.defer()
-        await show_raid_pool_edit(interaction, "NOL")
+        await show_raid_pool_edit(interaction, "NOL", original_user_id=self.original_user_id)
 
-    @discord.ui.button(label="TCC", style=discord.ButtonStyle.primary, custom_id="raid_tcc", emoji=discord.PartialEmoji(name="tcc", id=1466086007941365922))
+    @discord.ui.button(label="TCC", style=discord.ButtonStyle.primary, custom_id="raid_tcc", emoji=discord.PartialEmoji(name="tcc", id=1466160902037438627))
     async def tcc_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_user(interaction):
+            return
         await interaction.response.defer()
-        await show_raid_pool_edit(interaction, "TCC")
+        await show_raid_pool_edit(interaction, "TCC", original_user_id=self.original_user_id)
 
-    @discord.ui.button(label="TNA", style=discord.ButtonStyle.primary, custom_id="raid_tna", emoji=discord.PartialEmoji(name="tna", id=1466086122655453377))
+    @discord.ui.button(label="TNA", style=discord.ButtonStyle.primary, custom_id="raid_tna", emoji=discord.PartialEmoji(name="tna", id=1466160934937432409))
     async def tna_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_user(interaction):
+            return
         await interaction.response.defer()
-        await show_raid_pool_edit(interaction, "TNA")
+        await show_raid_pool_edit(interaction, "TNA", original_user_id=self.original_user_id)
 
 
-async def show_aspects_overview(interaction: discord.Interaction, edit: bool = False):
+async def show_aspects_overview(interaction: discord.Interaction, edit: bool = False, original_user_id: int = None):
     """Show the weekly loot pools overview."""
     # Get reset timestamps
     last_reset, next_reset = get_weekly_reset_times()
@@ -483,15 +554,15 @@ async def show_aspects_overview(interaction: discord.Interaction, edit: bool = F
 
     # Send or edit message with buttons
     if edit:
-        await interaction.edit_original_response(embeds=[embed], view=RaidButtonsView())
+        await interaction.edit_original_response(embeds=[embed], view=RaidButtonsView(original_user_id=original_user_id))
     else:
-        await interaction.followup.send(embed=embed, view=RaidButtonsView())
+        await interaction.followup.send(embed=embed, view=RaidButtonsView(original_user_id=original_user_id))
 
 
 @bot.tree.command(name="aspects", description="View weekly aspect loot pools")
 async def aspects(interaction: discord.Interaction):
     await interaction.response.defer()
-    await show_aspects_overview(interaction)
+    await show_aspects_overview(interaction, original_user_id=interaction.user.id)
 
 
 @bot.tree.command(name="raidpool", description="Get the loot pool for a specific raid")
@@ -507,23 +578,91 @@ async def raidpool(interaction: discord.Interaction, raid: app_commands.Choice[s
 
     # If no raid specified, show the overview
     if raid is None:
-        await show_aspects_overview(interaction)
+        await show_aspects_overview(interaction, original_user_id=interaction.user.id)
         return
 
-    await show_raid_pool(interaction, raid.value, followup=True)
+    await show_raid_pool(interaction, raid.value, followup=True, original_user_id=interaction.user.id)
 
 
 class BackToOverviewView(discord.ui.View):
-    def __init__(self):
+    # Filter modes: "all", "maxed", "non_maxed"
+    def __init__(self, raid_type: str = None, filter_mode: str = "all", is_linked: bool = False, original_user_id: int = None):
         super().__init__(timeout=300)
+        self.raid_type = raid_type
+        self.filter_mode = filter_mode
+        self.is_linked = is_linked
+        self.original_user_id = original_user_id
+        self._build_buttons()
 
-    @discord.ui.button(label="Back to Overview", style=discord.ButtonStyle.secondary, custom_id="back_overview")
-    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    async def _check_user(self, interaction: discord.Interaction) -> bool:
+        if self.original_user_id and interaction.user.id != self.original_user_id:
+            await interaction.response.send_message("Only the person who used the command can use these buttons.", ephemeral=True)
+            return False
+        return True
+
+    def _build_buttons(self):
+        # Back button
+        back_btn = discord.ui.Button(label="Back to Overview", style=discord.ButtonStyle.secondary)
+        back_btn.callback = self.back_callback
+        self.add_item(back_btn)
+
+        # Only show filter buttons if we have a raid type
+        if self.raid_type:
+            if self.is_linked:
+                # User is linked - show filter buttons
+                if self.filter_mode == "all":
+                    maxed_btn = discord.ui.Button(label="Only Maxed", style=discord.ButtonStyle.success)
+                    maxed_btn.callback = self.maxed_callback
+                    self.add_item(maxed_btn)
+
+                    non_maxed_btn = discord.ui.Button(label="Only Non-Maxed", style=discord.ButtonStyle.danger)
+                    non_maxed_btn.callback = self.non_maxed_callback
+                    self.add_item(non_maxed_btn)
+                else:
+                    all_btn = discord.ui.Button(label="Show All", style=discord.ButtonStyle.primary)
+                    all_btn.callback = self.all_callback
+                    self.add_item(all_btn)
+            else:
+                # User not linked - show link button
+                link_btn = discord.ui.Button(label="Link Account", style=discord.ButtonStyle.success, emoji="🔗")
+                link_btn.callback = self.link_callback
+                self.add_item(link_btn)
+
+    async def back_callback(self, interaction: discord.Interaction):
+        if not await self._check_user(interaction):
+            return
         await interaction.response.defer()
-        await show_aspects_overview_edit(interaction)
+        await show_aspects_overview_edit(interaction, original_user_id=self.original_user_id)
+
+    async def maxed_callback(self, interaction: discord.Interaction):
+        if not await self._check_user(interaction):
+            return
+        await interaction.response.defer()
+        await show_raid_pool_edit(interaction, self.raid_type, filter_mode="maxed", original_user_id=self.original_user_id)
+
+    async def non_maxed_callback(self, interaction: discord.Interaction):
+        if not await self._check_user(interaction):
+            return
+        await interaction.response.defer()
+        await show_raid_pool_edit(interaction, self.raid_type, filter_mode="non_maxed", original_user_id=self.original_user_id)
+
+    async def all_callback(self, interaction: discord.Interaction):
+        if not await self._check_user(interaction):
+            return
+        await interaction.response.defer()
+        await show_raid_pool_edit(interaction, self.raid_type, filter_mode="all", original_user_id=self.original_user_id)
+
+    async def link_callback(self, interaction: discord.Interaction):
+        # Link button is always allowed for anyone
+        embed = discord.Embed(
+            title="🔗 Link Your Account",
+            description="Use `/link <username>` to link your Minecraft account.\n\nOnce linked, you'll see:\n• Your personalized score\n• Which aspects you've maxed\n• Filter options for maxed/non-maxed",
+            color=0x00FF00
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-async def show_aspects_overview_edit(interaction: discord.Interaction):
+async def show_aspects_overview_edit(interaction: discord.Interaction, original_user_id: int = None):
     """Show the weekly loot pools overview (edit version)."""
     last_reset, next_reset = get_weekly_reset_times()
     mythics = await fetch_all_mythics()
@@ -546,47 +685,59 @@ async def show_aspects_overview_edit(interaction: discord.Interaction):
         if mythic_text:
             embed.add_field(name="Mythic Aspects", value=mythic_text.strip(), inline=False)
 
-    await interaction.edit_original_response(embeds=[embed], view=RaidButtonsView())
+    await interaction.edit_original_response(embeds=[embed], view=RaidButtonsView(original_user_id=original_user_id))
 
 
-async def show_raid_pool_edit(interaction: discord.Interaction, raid_type: str):
+async def show_raid_pool_edit(interaction: discord.Interaction, raid_type: str, filter_mode: str = "all", original_user_id: int = None):
     """Show loot pool for a specific raid (edit version)."""
     data = await fetch_loot_pool(raid_type)
+    linked_player = get_linked_player(interaction.user.id)
+    is_linked = bool(linked_player)
+
     if not data:
-        await interaction.edit_original_response(content=f"No loot pool available for {raid_type}.", embeds=[], view=BackToOverviewView())
+        await interaction.edit_original_response(content=f"No loot pool available for {raid_type}.", embeds=[], view=BackToOverviewView(raid_type, is_linked=is_linked, original_user_id=original_user_id))
         return
 
     aspects_list = sort_aspects_by_rarity(data.get("aspects", []))
-
-    linked_player = get_linked_player(interaction.user.id)
     score_text = None
+    player_aspects = {}
 
     if linked_player:
         player_data = await fetch_player_aspects(linked_player)
         if player_data:
-            player_aspects = {}
             for pa in player_data.get("aspects", []):
-                player_aspects[pa.get("name", "")] = pa.get("amount", 0)
+                name = pa.get("name", "")
+                amount = pa.get("amount", 0)
+                player_aspects[name] = amount
 
             pool_score = calculate_pool_score(aspects_list, player_aspects)
             if pool_score == 0:
                 score_text = "**Your Score:** MAXED"
             else:
                 score_text = f"**Your Score:** {pool_score:.2f}"
+    else:
+        score_text = "*Use /link to see your score!*"
+
+    # Fetch class mapping from Wynncraft API
+    class_mapping = await get_aspect_class_mapping()
+
+    # Build title with filter indicator
+    title = f"{RAID_EMOJIS.get(raid_type, '<:lootrun:1466173956884136188>')} {RAID_NAMES.get(raid_type, raid_type)} Loot Pool"
+    if filter_mode == "maxed":
+        title += " (Maxed Only)"
+    elif filter_mode == "non_maxed":
+        title += " (Non-Maxed Only)"
 
     embed = discord.Embed(
-        title=f"{RAID_EMOJIS.get(raid_type, '📦')} {RAID_NAMES.get(raid_type, raid_type)} Loot Pool",
+        title=title,
         description=score_text,
         color=0x8B008B
     )
 
     if not aspects_list:
         embed.description = "No aspects in the loot pool."
-        await interaction.edit_original_response(embeds=[embed], view=BackToOverviewView())
+        await interaction.edit_original_response(embeds=[embed], view=BackToOverviewView(raid_type, filter_mode, is_linked, original_user_id=original_user_id))
         return
-
-    # Fetch class mapping from Wynncraft API
-    class_mapping = await get_aspect_class_mapping()
 
     embeds = [embed]
     for rarity in ["Mythic", "Fabled", "Legendary"]:
@@ -597,22 +748,54 @@ async def show_raid_pool_edit(interaction: discord.Interaction, raid_type: str):
         aspect_lines = []
         for aspect in rarity_aspects:
             aspect_name = aspect.get("name", "")
+            aspect_rarity = aspect.get("rarity", "").lower()
             required_class = get_aspect_class(aspect_name, class_mapping)
-            emoji = get_aspect_emoji(required_class)
+
+            # Check if user has maxed this aspect
+            is_maxed = False
+            if aspect_name in player_aspects:
+                max_threshold = ASPECT_MAX_THRESHOLDS.get(aspect_rarity, 150)
+                player_amount = player_aspects[aspect_name]
+                is_maxed = player_amount >= max_threshold
+
+            # Apply filter
+            if filter_mode == "maxed" and not is_maxed:
+                continue
+            if filter_mode == "non_maxed" and is_maxed:
+                continue
+
+            # Use different emoji for maxed vs not maxed
+            if is_maxed:
+                emoji = get_aspect_emoji(required_class)  # Maxed - animated flame
+            else:
+                # Not maxed - class item emoji
+                emoji = CLASS_ITEM_EMOJIS.get(required_class.lower() if required_class else "", "") or get_aspect_emoji(required_class)
+
             aspect_lines.append(f"{emoji} {aspect_name}")
 
-        rarity_embed = discord.Embed(
-            title=f"{rarity} Aspects",
-            description="\n".join(aspect_lines),
-            color=RARITY_COLORS.get(rarity, 0x808080)
-        )
-        embeds.append(rarity_embed)
+        # Only add embed if there are aspects to show
+        if aspect_lines:
+            rarity_embed = discord.Embed(
+                title=f"{rarity} Aspects",
+                description="\n".join(aspect_lines),
+                color=RARITY_COLORS.get(rarity, 0x808080)
+            )
+            embeds.append(rarity_embed)
 
-    await interaction.edit_original_response(embeds=embeds, view=BackToOverviewView())
+    # If filtering and no aspects found
+    if filter_mode == "maxed" and len(embeds) == 1:
+        embed.description = (score_text + "\n\n" if score_text else "") + "*No maxed aspects in this pool.*"
+    elif filter_mode == "non_maxed" and len(embeds) == 1:
+        embed.description = (score_text + "\n\n" if score_text else "") + "*All aspects in this pool are maxed!*"
+
+    await interaction.edit_original_response(embeds=embeds, view=BackToOverviewView(raid_type, filter_mode, is_linked, original_user_id=original_user_id))
 
 
-async def show_raid_pool(interaction: discord.Interaction, raid_type: str, followup: bool = True, edit: bool = False):
+async def show_raid_pool(interaction: discord.Interaction, raid_type: str, followup: bool = True, edit: bool = False, filter_mode: str = "all", original_user_id: int = None):
     """Show loot pool for a specific raid."""
+    linked_player = get_linked_player(interaction.user.id)
+    is_linked = bool(linked_player)
+
     data = await fetch_loot_pool(raid_type)
     if not data:
         if edit:
@@ -622,15 +805,12 @@ async def show_raid_pool(interaction: discord.Interaction, raid_type: str, follo
         return
 
     aspects_list = sort_aspects_by_rarity(data.get("aspects", []))
-
-    # Check if user is linked and calculate personalized score
-    linked_player = get_linked_player(interaction.user.id)
     score_text = None
+    player_aspects = {}
 
     if linked_player:
         player_data = await fetch_player_aspects(linked_player)
         if player_data:
-            player_aspects = {}
             for pa in player_data.get("aspects", []):
                 player_aspects[pa.get("name", "")] = pa.get("amount", 0)
 
@@ -639,9 +819,21 @@ async def show_raid_pool(interaction: discord.Interaction, raid_type: str, follo
                 score_text = "**Your Score:** MAXED"
             else:
                 score_text = f"**Your Score:** {pool_score:.2f}"
+    else:
+        score_text = "*Use /link to see your score!*"
+
+    # Fetch class mapping from Wynncraft API
+    class_mapping = await get_aspect_class_mapping()
+
+    # Build title with filter indicator
+    title = f"{RAID_EMOJIS.get(raid_type, '<:lootrun:1466173956884136188>')} {RAID_NAMES.get(raid_type, raid_type)} Loot Pool"
+    if filter_mode == "maxed":
+        title += " (Maxed Only)"
+    elif filter_mode == "non_maxed":
+        title += " (Non-Maxed Only)"
 
     embed = discord.Embed(
-        title=f"{RAID_EMOJIS.get(raid_type, '📦')} {RAID_NAMES.get(raid_type, raid_type)} Loot Pool",
+        title=title,
         description=score_text,
         color=0x8B008B
     )
@@ -649,13 +841,10 @@ async def show_raid_pool(interaction: discord.Interaction, raid_type: str, follo
     if not aspects_list:
         embed.description = "No aspects in the loot pool."
         if edit:
-            await interaction.edit_original_response(embed=embed, view=BackToOverviewView())
+            await interaction.edit_original_response(embed=embed, view=BackToOverviewView(raid_type, filter_mode, is_linked, original_user_id=original_user_id))
         else:
-            await interaction.followup.send(embed=embed, view=BackToOverviewView())
+            await interaction.followup.send(embed=embed, view=BackToOverviewView(raid_type, filter_mode, is_linked, original_user_id=original_user_id))
         return
-
-    # Fetch class mapping from Wynncraft API
-    class_mapping = await get_aspect_class_mapping()
 
     # Create separate embeds per rarity with aspects listed vertically
     embeds = [embed]
@@ -668,44 +857,91 @@ async def show_raid_pool(interaction: discord.Interaction, raid_type: str, follo
         aspect_lines = []
         for aspect in rarity_aspects:
             aspect_name = aspect.get("name", "")
+            aspect_rarity = aspect.get("rarity", "").lower()
             required_class = get_aspect_class(aspect_name, class_mapping)
-            emoji = get_aspect_emoji(required_class)
-            aspect_lines.append(f"{emoji} {aspect['name']}")
 
-        rarity_embed = discord.Embed(
-            title=f"{rarity} Aspects",
-            description="\n".join(aspect_lines),
-            color=RARITY_COLORS.get(rarity, 0x808080)
-        )
+            # Check if user has maxed this aspect
+            is_maxed = False
+            if aspect_name in player_aspects:
+                max_threshold = ASPECT_MAX_THRESHOLDS.get(aspect_rarity, 150)
+                player_amount = player_aspects[aspect_name]
+                is_maxed = player_amount >= max_threshold
 
-        embeds.append(rarity_embed)
+            # Apply filter
+            if filter_mode == "maxed" and not is_maxed:
+                continue
+            if filter_mode == "non_maxed" and is_maxed:
+                continue
+
+            # Use different emoji for maxed vs not maxed
+            if is_maxed:
+                emoji = get_aspect_emoji(required_class)  # Maxed - animated flame
+            else:
+                # Not maxed - class item emoji
+                emoji = CLASS_ITEM_EMOJIS.get(required_class.lower() if required_class else "", "") or get_aspect_emoji(required_class)
+
+            aspect_lines.append(f"{emoji} {aspect_name}")
+
+        # Only add embed if there are aspects to show
+        if aspect_lines:
+            rarity_embed = discord.Embed(
+                title=f"{rarity} Aspects",
+                description="\n".join(aspect_lines),
+                color=RARITY_COLORS.get(rarity, 0x808080)
+            )
+            embeds.append(rarity_embed)
+
+    # If filtering and no aspects found
+    if filter_mode == "maxed" and len(embeds) == 1:
+        embed.description = (score_text + "\n\n" if score_text else "") + "*No maxed aspects in this pool.*"
+    elif filter_mode == "non_maxed" and len(embeds) == 1:
+        embed.description = (score_text + "\n\n" if score_text else "") + "*All aspects in this pool are maxed!*"
 
     if edit:
-        await interaction.edit_original_response(embeds=embeds, view=BackToOverviewView())
+        await interaction.edit_original_response(embeds=embeds, view=BackToOverviewView(raid_type, filter_mode, is_linked, original_user_id=original_user_id))
     else:
-        await interaction.followup.send(embeds=embeds, view=BackToOverviewView())
+        await interaction.followup.send(embeds=embeds, view=BackToOverviewView(raid_type, filter_mode, is_linked, original_user_id=original_user_id))
 
 
-@bot.tree.command(name="lootpool", description="View loot pools for raids or lootruns")
-async def lootpool(interaction: discord.Interaction):
+@bot.tree.command(name="lootpool", description="View loot pools for raids")
+@app_commands.describe(pool="Select a raid loot pool")
+@app_commands.choices(pool=[
+    app_commands.Choice(name="Nest of the Grootslangs (NOTG)", value="NOTG"),
+    app_commands.Choice(name="Orphion's Nexus of Light (NOL)", value="NOL"),
+    app_commands.Choice(name="The Canyon Colossus (TCC)", value="TCC"),
+    app_commands.Choice(name="The Nameless Anomaly (TNA)", value="TNA"),
+])
+async def lootpool(
+    interaction: discord.Interaction,
+    pool: app_commands.Choice[str] = None
+):
+    await interaction.response.defer()
+
+    # If pool is specified, show that raid's loot pool
+    if pool:
+        await show_raid_pool(interaction, pool.value, original_user_id=interaction.user.id)
+        return
+
+    # No parameters - show selection menu
     embed = discord.Embed(
-        title="📦 Loot Pool Viewer",
-        description="Select what type of loot pool you want to view:",
+        title="<:lootrun:1466173956884136188> Loot Pool Viewer",
+        description="Select a loot pool to view:",
         color=0x5865F2
     )
-    await interaction.response.send_message(embed=embed, view=LootPoolView())
+    await interaction.followup.send(embed=embed, view=LootPoolView(original_user_id=interaction.user.id))
 
 
 # === Profile Viewer ===
 class ProfileView(discord.ui.View):
     TABS = ["General", "Raids", "Rankings", "Dungeons", "Profs", "Aspects", "Misc"]
 
-    def __init__(self, player_data: dict, uuid: str, current_tab: str = "General", aspects_data: dict = None):
+    def __init__(self, player_data: dict, uuid: str, current_tab: str = "General", aspects_data: dict = None, original_user_id: int = None):
         super().__init__(timeout=300)
         self.player_data = player_data
         self.uuid = uuid
         self.current_tab = current_tab
         self.aspects_data = aspects_data
+        self.original_user_id = original_user_id
         self._build_buttons()
 
     def _build_buttons(self):
@@ -718,6 +954,11 @@ class ProfileView(discord.ui.View):
 
     def _make_callback(self, tab: str):
         async def callback(interaction: discord.Interaction):
+            # Check if user is the original command user
+            if self.original_user_id and interaction.user.id != self.original_user_id:
+                await interaction.response.send_message("Only the person who used the command can use these buttons.", ephemeral=True)
+                return
+
             await interaction.response.defer()
 
             # For Aspects tab, we need to fetch data
@@ -727,7 +968,7 @@ class ProfileView(discord.ui.View):
                 aspects_data = await fetch_aspects_by_uuid(self.uuid)
 
             embed = await self._get_embed_async(tab, aspects_data)
-            new_view = ProfileView(self.player_data, self.uuid, current_tab=tab, aspects_data=aspects_data)
+            new_view = ProfileView(self.player_data, self.uuid, current_tab=tab, aspects_data=aspects_data, original_user_id=self.original_user_id)
             await interaction.edit_original_response(embed=embed, view=new_view)
         return callback
 
@@ -822,7 +1063,7 @@ def build_raids_embed(data: dict) -> discord.Embed:
 
 def build_rankings_embed(data: dict) -> discord.Embed:
     """Build the Rankings tab embed."""
-    embed = discord.Embed(title="🏆 Rankings", color=0xFFD700)
+    embed = discord.Embed(title="🥇 Rankings", color=0xFFD700)
 
     ranking = data.get("ranking", {})
 
@@ -863,12 +1104,23 @@ def build_rankings_embed(data: dict) -> discord.Embed:
         "armouringLevel": "Armouring",
     }
 
+    def get_rank_prefix(rank: int) -> str:
+        if rank == 1:
+            return "🥇 "
+        elif rank == 2:
+            return "🥈 "
+        elif rank == 3:
+            return "🥉 "
+        elif rank <= 100:
+            return "🏆 "
+        return ""
+
     combat_text = ""
     for key, name in combat_ranks.items():
         if key in ranking:
             rank = ranking[key]
-            trophy = "🏆 " if rank <= 100 else ""
-            combat_text += f"{trophy}**{name}:** #{rank:,}\n"
+            prefix = get_rank_prefix(rank)
+            combat_text += f"{prefix}**{name}:** #{rank:,}\n"
 
     if combat_text:
         embed.add_field(name="General", value=combat_text, inline=True)
@@ -877,8 +1129,8 @@ def build_rankings_embed(data: dict) -> discord.Embed:
     for key, name in raid_ranks.items():
         if key in ranking:
             rank = ranking[key]
-            trophy = "🏆 " if rank <= 100 else ""
-            raid_text += f"{trophy}**{name}:** #{rank:,}\n"
+            prefix = get_rank_prefix(rank)
+            raid_text += f"{prefix}**{name}:** #{rank:,}\n"
 
     if raid_text:
         embed.add_field(name="Raids", value=raid_text, inline=True)
@@ -887,8 +1139,8 @@ def build_rankings_embed(data: dict) -> discord.Embed:
     for key, name in prof_ranks.items():
         if key in ranking:
             rank = ranking[key]
-            trophy = "🏆 " if rank <= 100 else ""
-            prof_text += f"{trophy}**{name}:** #{rank:,}\n"
+            prefix = get_rank_prefix(rank)
+            prof_text += f"{prefix}**{name}:** #{rank:,}\n"
 
     if prof_text:
         embed.add_field(name="Professions", value=prof_text[:1024], inline=False)
@@ -941,7 +1193,7 @@ def build_profs_embed(data: dict) -> discord.Embed:
         prof_data = profs.get(prof, {})
         level = prof_data.get("level", 0)
         xp = prof_data.get("xpPercent", 0)
-        maxed = "🌈 " if level >= 132 else ""
+        maxed = "⭐ " if level >= 132 else ""
         gathering_text += f"{maxed}**{prof.title()}:** {level}/132 ({xp}%)\n"
 
     embed.add_field(name="Gathering", value=gathering_text, inline=True)
@@ -951,7 +1203,7 @@ def build_profs_embed(data: dict) -> discord.Embed:
         prof_data = profs.get(prof, {})
         level = prof_data.get("level", 0)
         xp = prof_data.get("xpPercent", 0)
-        maxed = "🌈 " if level >= 132 else ""
+        maxed = "⭐ " if level >= 132 else ""
         crafting_text += f"{maxed}**{prof.title()}:** {level}/132 ({xp}%)\n"
 
     embed.add_field(name="Crafting", value=crafting_text, inline=True)
@@ -970,7 +1222,7 @@ ASPECT_MAX_THRESHOLDS = {
 async def build_aspects_embed(player_data: dict, aspects_data: dict) -> discord.Embed:
     """Build the Aspects tab embed showing maxed aspects per class."""
     username = player_data.get("username", "Unknown")
-    embed = discord.Embed(title=f"🔥 {username}'s Aspects", color=0x8B008B)
+    embed = discord.Embed(title=f"{ASPECT_EMOJIS['assassin']} {username}'s Aspects", color=0x8B008B)
 
     if not aspects_data or "aspects" not in aspects_data:
         embed.description = "No aspects data available.\nThis player hasn't uploaded aspects from the WynnExtras mod."
@@ -1021,7 +1273,7 @@ async def build_aspects_embed(player_data: dict, aspects_data: dict) -> discord.
         if total == 0:
             continue
 
-        progress = "🌈 MAXED" if maxed == total else f"{maxed}/{total}"
+        progress = "⭐ MAXED" if maxed == total else f"{maxed}/{total}"
         embed.add_field(
             name=f"{emoji} {class_name.title()}",
             value=progress,
@@ -1052,6 +1304,9 @@ def build_dungeons_embed(data: dict) -> discord.Embed:
     corrupted_dungeons = []
 
     for name, count in sorted(dungeon_list.items()):
+        # Only show valid current dungeons
+        if name not in VALID_DUNGEONS:
+            continue
         if count > 0:
             if name.startswith("Corrupted"):
                 corrupted_dungeons.append(f"**{name}:** {count:,}")
@@ -1119,7 +1374,7 @@ async def pv(interaction: discord.Interaction, player: str = None):
     embed = build_general_embed(data)
 
     # Send with tab buttons
-    await interaction.followup.send(embed=embed, view=ProfileView(data, uuid))
+    await interaction.followup.send(embed=embed, view=ProfileView(data, uuid, original_user_id=interaction.user.id))
 
 
 @bot.tree.command(name="link", description="Link your Discord to a Minecraft account")
