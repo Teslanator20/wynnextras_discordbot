@@ -163,6 +163,49 @@ async def fetch_player_uuid(player_name: str) -> str | None:
             return None
 
 
+# Cache for aspect class mapping (name -> class)
+_aspect_class_cache: dict[str, str] = {}
+_aspect_cache_time: float = 0
+ASPECT_CACHE_TTL = 3600  # 1 hour
+
+
+async def get_aspect_class_mapping() -> dict[str, str]:
+    """Fetch aspect -> class mapping from Wynncraft API, with caching."""
+    global _aspect_class_cache, _aspect_cache_time
+
+    import time
+    now = time.time()
+
+    # Return cached data if still valid
+    if _aspect_class_cache and (now - _aspect_cache_time) < ASPECT_CACHE_TTL:
+        return _aspect_class_cache
+
+    mapping = {}
+    classes = ["warrior", "mage", "archer", "assassin", "shaman"]
+
+    async with aiohttp.ClientSession() as session:
+        for class_name in classes:
+            try:
+                async with session.get(f"https://api.wynncraft.com/v3/aspects/{class_name}") as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for aspect_name, aspect_data in data.items():
+                            mapping[aspect_name] = class_name
+            except Exception as e:
+                print(f"Error fetching aspects for {class_name}: {e}")
+
+    if mapping:
+        _aspect_class_cache = mapping
+        _aspect_cache_time = now
+
+    return mapping
+
+
+def get_aspect_class(aspect_name: str, class_mapping: dict[str, str]) -> str | None:
+    """Get class for an aspect from the mapping."""
+    return class_mapping.get(aspect_name)
+
+
 async def fetch_wynncraft_player(uuid: str) -> dict | None:
     """Fetch full player data from Wynncraft API."""
     async with aiohttp.ClientSession() as session:
@@ -533,6 +576,9 @@ async def show_raid_pool_edit(interaction: discord.Interaction, raid_type: str):
         await interaction.edit_original_response(embeds=[embed], view=BackToOverviewView())
         return
 
+    # Fetch class mapping from Wynncraft API
+    class_mapping = await get_aspect_class_mapping()
+
     embeds = [embed]
     for rarity in ["Mythic", "Fabled", "Legendary"]:
         rarity_aspects = [a for a in aspects_list if a.get("rarity") == rarity]
@@ -541,9 +587,10 @@ async def show_raid_pool_edit(interaction: discord.Interaction, raid_type: str):
 
         aspect_lines = []
         for aspect in rarity_aspects:
-            required_class = aspect.get("requiredClass")
+            aspect_name = aspect.get("name", "")
+            required_class = get_aspect_class(aspect_name, class_mapping)
             emoji = get_aspect_emoji(required_class)
-            aspect_lines.append(f"{emoji} {aspect['name']}")
+            aspect_lines.append(f"{emoji} {aspect_name}")
 
         rarity_embed = discord.Embed(
             title=f"{rarity} Aspects",
@@ -598,6 +645,9 @@ async def show_raid_pool(interaction: discord.Interaction, raid_type: str, follo
             await interaction.followup.send(embed=embed, view=BackToOverviewView())
         return
 
+    # Fetch class mapping from Wynncraft API
+    class_mapping = await get_aspect_class_mapping()
+
     # Create separate embeds per rarity with aspects listed vertically
     embeds = [embed]
     for rarity in ["Mythic", "Fabled", "Legendary"]:
@@ -608,7 +658,8 @@ async def show_raid_pool(interaction: discord.Interaction, raid_type: str, follo
         # Build text with each aspect on its own line
         aspect_lines = []
         for aspect in rarity_aspects:
-            required_class = aspect.get("requiredClass")
+            aspect_name = aspect.get("name", "")
+            required_class = get_aspect_class(aspect_name, class_mapping)
             emoji = get_aspect_emoji(required_class)
             aspect_lines.append(f"{emoji} {aspect['name']}")
 
