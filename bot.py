@@ -356,10 +356,10 @@ class RaidSelectView(discord.ui.View):
         select = discord.ui.Select(
             placeholder="Choose a raid...",
             options=[
-                discord.SelectOption(label="Nest of the Grootslangs", value="NOTG", emoji="🐍"),
-                discord.SelectOption(label="Orphion's Nexus of Light", value="NOL", emoji="✨"),
-                discord.SelectOption(label="The Canyon Colossus", value="TCC", emoji="🪨"),
-                discord.SelectOption(label="The Nameless Anomaly", value="TNA", emoji="🌀"),
+                discord.SelectOption(label="Nest of the Grootslangs", value="NOTG", emoji=discord.PartialEmoji(name="notg", id=1466085912520691957)),
+                discord.SelectOption(label="Orphion's Nexus of Light", value="NOL", emoji=discord.PartialEmoji(name="nol", id=1466086178913779927)),
+                discord.SelectOption(label="The Canyon Colossus", value="TCC", emoji=discord.PartialEmoji(name="tcc", id=1466086007941365922)),
+                discord.SelectOption(label="The Nameless Anomaly", value="TNA", emoji=discord.PartialEmoji(name="tna", id=1466086122655453377)),
             ]
         )
         select.callback = self.select_callback
@@ -371,7 +371,7 @@ class RaidSelectView(discord.ui.View):
 
         data = await fetch_loot_pool(raid_type)
         if not data:
-            await interaction.followup.send(f"No loot pool available for {raid_type}.", ephemeral=True)
+            await interaction.edit_original_response(content=f"No loot pool available for {raid_type}.", embed=None, view=None)
             return
 
         aspects = sort_aspects_by_rarity(data.get("aspects", []))
@@ -398,7 +398,7 @@ class RaidSelectView(discord.ui.View):
 
         if not aspects:
             embed.description = "No aspects in the loot pool."
-            await interaction.followup.send(embed=embed)
+            await interaction.edit_original_response(embed=embed, view=None)
             return
 
         # Create separate embeds per rarity with colored sidebars
@@ -424,35 +424,35 @@ class RaidSelectView(discord.ui.View):
 
             embeds.append(rarity_embed)
 
-        await interaction.followup.send(embeds=embeds)
+        await interaction.edit_original_response(embeds=embeds, view=None)
 
 
 class RaidButtonsView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=300)
 
-    @discord.ui.button(label="NOTG", style=discord.ButtonStyle.primary, custom_id="raid_notg")
+    @discord.ui.button(label="NOTG", style=discord.ButtonStyle.primary, custom_id="raid_notg", emoji=discord.PartialEmoji(name="notg", id=1466085912520691957))
     async def notg_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        await show_raid_pool(interaction, "NOTG")
+        await show_raid_pool(interaction, "NOTG", edit=True)
 
-    @discord.ui.button(label="NOL", style=discord.ButtonStyle.primary, custom_id="raid_nol")
+    @discord.ui.button(label="NOL", style=discord.ButtonStyle.primary, custom_id="raid_nol", emoji=discord.PartialEmoji(name="nol", id=1466086178913779927))
     async def nol_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        await show_raid_pool(interaction, "NOL")
+        await show_raid_pool(interaction, "NOL", edit=True)
 
-    @discord.ui.button(label="TCC", style=discord.ButtonStyle.primary, custom_id="raid_tcc")
+    @discord.ui.button(label="TCC", style=discord.ButtonStyle.primary, custom_id="raid_tcc", emoji=discord.PartialEmoji(name="tcc", id=1466086007941365922))
     async def tcc_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        await show_raid_pool(interaction, "TCC")
+        await show_raid_pool(interaction, "TCC", edit=True)
 
-    @discord.ui.button(label="TNA", style=discord.ButtonStyle.primary, custom_id="raid_tna")
+    @discord.ui.button(label="TNA", style=discord.ButtonStyle.primary, custom_id="raid_tna", emoji=discord.PartialEmoji(name="tna", id=1466086122655453377))
     async def tna_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        await show_raid_pool(interaction, "TNA")
+        await show_raid_pool(interaction, "TNA", edit=True)
 
 
-async def show_aspects_overview(interaction: discord.Interaction):
+async def show_aspects_overview(interaction: discord.Interaction, edit: bool = False):
     """Show the weekly loot pools overview."""
     # Get reset timestamps
     last_reset, next_reset = get_weekly_reset_times()
@@ -480,8 +480,11 @@ async def show_aspects_overview(interaction: discord.Interaction):
         if mythic_text:
             embed.add_field(name="Mythic Aspects", value=mythic_text.strip(), inline=False)
 
-    # Send message with buttons
-    await interaction.followup.send(embed=embed, view=RaidButtonsView())
+    # Send or edit message with buttons
+    if edit:
+        await interaction.edit_original_response(embed=embed, embeds=[embed], view=RaidButtonsView())
+    else:
+        await interaction.followup.send(embed=embed, view=RaidButtonsView())
 
 
 @bot.tree.command(name="aspects", description="View weekly aspect loot pools")
@@ -509,11 +512,24 @@ async def raidpool(interaction: discord.Interaction, raid: app_commands.Choice[s
     await show_raid_pool(interaction, raid.value, followup=True)
 
 
-async def show_raid_pool(interaction: discord.Interaction, raid_type: str, followup: bool = True):
+class BackToOverviewView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="Back to Overview", style=discord.ButtonStyle.secondary, custom_id="back_overview")
+    async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        await show_aspects_overview(interaction, edit=True)
+
+
+async def show_raid_pool(interaction: discord.Interaction, raid_type: str, followup: bool = True, edit: bool = False):
     """Show loot pool for a specific raid."""
     data = await fetch_loot_pool(raid_type)
     if not data:
-        await interaction.followup.send(f"No loot pool available for {raid_type}.", ephemeral=True)
+        if edit:
+            await interaction.edit_original_response(content=f"No loot pool available for {raid_type}.", embeds=[], view=None)
+        else:
+            await interaction.followup.send(f"No loot pool available for {raid_type}.", ephemeral=True)
         return
 
     aspects_list = sort_aspects_by_rarity(data.get("aspects", []))
@@ -543,7 +559,10 @@ async def show_raid_pool(interaction: discord.Interaction, raid_type: str, follo
 
     if not aspects_list:
         embed.description = "No aspects in the loot pool."
-        await interaction.followup.send(embed=embed)
+        if edit:
+            await interaction.edit_original_response(embed=embed, view=BackToOverviewView())
+        else:
+            await interaction.followup.send(embed=embed, view=BackToOverviewView())
         return
 
     # Create separate embeds per rarity with aspects listed vertically
@@ -568,7 +587,10 @@ async def show_raid_pool(interaction: discord.Interaction, raid_type: str, follo
 
         embeds.append(rarity_embed)
 
-    await interaction.followup.send(embeds=embeds)
+    if edit:
+        await interaction.edit_original_response(embeds=embeds, view=BackToOverviewView())
+    else:
+        await interaction.followup.send(embeds=embeds, view=BackToOverviewView())
 
 
 @bot.tree.command(name="lootpool", description="View loot pools for raids or lootruns")
