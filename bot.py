@@ -343,11 +343,16 @@ class LootPoolView(discord.ui.View):
 
     @discord.ui.button(label="Raid Loot Pool", style=discord.ButtonStyle.primary, emoji="⚔️")
     async def raid_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("Select a raid:", view=RaidSelectView(), ephemeral=True)
+        embed = discord.Embed(
+            title="📦 Select a Raid",
+            description="Choose a raid to view its loot pool:",
+            color=0x5865F2
+        )
+        await interaction.response.edit_message(embed=embed, view=RaidSelectView())
 
     @discord.ui.button(label="Lootrun (Coming Soon)", style=discord.ButtonStyle.secondary, emoji="🏃", disabled=True)
     async def lootrun_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_message("Lootrun loot pools are not yet implemented.", ephemeral=True)
+        pass
 
 
 class RaidSelectView(discord.ui.View):
@@ -368,63 +373,7 @@ class RaidSelectView(discord.ui.View):
     async def select_callback(self, interaction: discord.Interaction):
         raid_type = self.children[0].values[0]
         await interaction.response.defer()
-
-        data = await fetch_loot_pool(raid_type)
-        if not data:
-            await interaction.edit_original_response(content=f"No loot pool available for {raid_type}.", embed=None, view=None)
-            return
-
-        aspects = sort_aspects_by_rarity(data.get("aspects", []))
-
-        # Personalized score
-        linked_player = get_linked_player(interaction.user.id)
-        score_text = None
-
-        if linked_player:
-            player_data = await fetch_player_aspects(linked_player)
-            if player_data:
-                player_aspects = {pa.get("name", ""): pa.get("amount", 0) for pa in player_data.get("aspects", [])}
-                pool_score = calculate_pool_score(aspects, player_aspects)
-                if pool_score == 0:
-                    score_text = "**Your Score:** MAXED"
-                else:
-                    score_text = f"**Your Score:** {pool_score:.2f}"
-
-        embed = discord.Embed(
-            title=f"{RAID_EMOJIS.get(raid_type, '📦')} {RAID_NAMES.get(raid_type, raid_type)} Loot Pool",
-            description=score_text,
-            color=0x8B008B
-        )
-
-        if not aspects:
-            embed.description = "No aspects in the loot pool."
-            await interaction.edit_original_response(embed=embed, view=None)
-            return
-
-        # Create separate embeds per rarity with colored sidebars
-        embeds = [embed]
-        for rarity in ["Mythic", "Fabled", "Legendary"]:
-            rarity_aspects = [a for a in aspects if a.get("rarity") == rarity]
-            if not rarity_aspects:
-                continue
-
-            rarity_embed = discord.Embed(
-                title=f"{rarity} Aspects",
-                color=RARITY_COLORS.get(rarity, 0x808080)
-            )
-
-            for aspect in rarity_aspects:
-                required_class = aspect.get("requiredClass")
-                emoji = get_aspect_emoji(required_class)
-                rarity_embed.add_field(
-                    name=f"{emoji} {aspect['name']}",
-                    value="\u200b",
-                    inline=True
-                )
-
-            embeds.append(rarity_embed)
-
-        await interaction.edit_original_response(embeds=embeds, view=None)
+        await show_raid_pool_edit(interaction, raid_type)
 
 
 class RaidButtonsView(discord.ui.View):
@@ -434,22 +383,22 @@ class RaidButtonsView(discord.ui.View):
     @discord.ui.button(label="NOTG", style=discord.ButtonStyle.primary, custom_id="raid_notg", emoji=discord.PartialEmoji(name="notg", id=1466085912520691957))
     async def notg_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        await show_raid_pool(interaction, "NOTG", edit=True)
+        await show_raid_pool_edit(interaction, "NOTG")
 
     @discord.ui.button(label="NOL", style=discord.ButtonStyle.primary, custom_id="raid_nol", emoji=discord.PartialEmoji(name="nol", id=1466086178913779927))
     async def nol_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        await show_raid_pool(interaction, "NOL", edit=True)
+        await show_raid_pool_edit(interaction, "NOL")
 
     @discord.ui.button(label="TCC", style=discord.ButtonStyle.primary, custom_id="raid_tcc", emoji=discord.PartialEmoji(name="tcc", id=1466086007941365922))
     async def tcc_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        await show_raid_pool(interaction, "TCC", edit=True)
+        await show_raid_pool_edit(interaction, "TCC")
 
     @discord.ui.button(label="TNA", style=discord.ButtonStyle.primary, custom_id="raid_tna", emoji=discord.PartialEmoji(name="tna", id=1466086122655453377))
     async def tna_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        await show_raid_pool(interaction, "TNA", edit=True)
+        await show_raid_pool_edit(interaction, "TNA")
 
 
 async def show_aspects_overview(interaction: discord.Interaction, edit: bool = False):
@@ -519,7 +468,91 @@ class BackToOverviewView(discord.ui.View):
     @discord.ui.button(label="Back to Overview", style=discord.ButtonStyle.secondary, custom_id="back_overview")
     async def back_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-        await show_aspects_overview(interaction, edit=True)
+        await show_aspects_overview_edit(interaction)
+
+
+async def show_aspects_overview_edit(interaction: discord.Interaction):
+    """Show the weekly loot pools overview (edit version)."""
+    last_reset, next_reset = get_weekly_reset_times()
+    mythics = await fetch_all_mythics()
+
+    embed = discord.Embed(
+        title="Weekly Loot Pools",
+        description=f"**Updates at:** <t:{next_reset}:F>",
+        color=0x5C005C
+    )
+
+    if mythics:
+        mythic_text = ""
+        for raid_type in RAID_TYPES:
+            raid_mythics = [m for m in mythics if m.get("raid") == raid_type]
+            if raid_mythics:
+                for m in raid_mythics:
+                    mythic_text += f"{RAID_EMOJIS[raid_type]} {m['name']}\n"
+                mythic_text += "\n"
+
+        if mythic_text:
+            embed.add_field(name="Mythic Aspects", value=mythic_text.strip(), inline=False)
+
+    await interaction.edit_original_response(embed=embed, embeds=[embed], view=RaidButtonsView())
+
+
+async def show_raid_pool_edit(interaction: discord.Interaction, raid_type: str):
+    """Show loot pool for a specific raid (edit version)."""
+    data = await fetch_loot_pool(raid_type)
+    if not data:
+        await interaction.edit_original_response(content=f"No loot pool available for {raid_type}.", embeds=[], view=BackToOverviewView())
+        return
+
+    aspects_list = sort_aspects_by_rarity(data.get("aspects", []))
+
+    linked_player = get_linked_player(interaction.user.id)
+    score_text = None
+
+    if linked_player:
+        player_data = await fetch_player_aspects(linked_player)
+        if player_data:
+            player_aspects = {}
+            for pa in player_data.get("aspects", []):
+                player_aspects[pa.get("name", "")] = pa.get("amount", 0)
+
+            pool_score = calculate_pool_score(aspects_list, player_aspects)
+            if pool_score == 0:
+                score_text = "**Your Score:** MAXED"
+            else:
+                score_text = f"**Your Score:** {pool_score:.2f}"
+
+    embed = discord.Embed(
+        title=f"{RAID_EMOJIS.get(raid_type, '📦')} {RAID_NAMES.get(raid_type, raid_type)} Loot Pool",
+        description=score_text,
+        color=0x8B008B
+    )
+
+    if not aspects_list:
+        embed.description = "No aspects in the loot pool."
+        await interaction.edit_original_response(embed=embed, embeds=[embed], view=BackToOverviewView())
+        return
+
+    embeds = [embed]
+    for rarity in ["Mythic", "Fabled", "Legendary"]:
+        rarity_aspects = [a for a in aspects_list if a.get("rarity") == rarity]
+        if not rarity_aspects:
+            continue
+
+        aspect_lines = []
+        for aspect in rarity_aspects:
+            required_class = aspect.get("requiredClass")
+            emoji = get_aspect_emoji(required_class)
+            aspect_lines.append(f"{emoji} {aspect['name']}")
+
+        rarity_embed = discord.Embed(
+            title=f"{rarity} Aspects",
+            description="\n".join(aspect_lines),
+            color=RARITY_COLORS.get(rarity, 0x808080)
+        )
+        embeds.append(rarity_embed)
+
+    await interaction.edit_original_response(embeds=embeds, view=BackToOverviewView())
 
 
 async def show_raid_pool(interaction: discord.Interaction, raid_type: str, followup: bool = True, edit: bool = False):
@@ -605,40 +638,44 @@ async def lootpool(interaction: discord.Interaction):
 
 # === Profile Viewer ===
 class ProfileView(discord.ui.View):
-    def __init__(self, player_data: dict, uuid: str):
+    TABS = ["General", "Raids", "Rankings", "Dungeons", "Profs", "Misc"]
+
+    def __init__(self, player_data: dict, uuid: str, current_tab: str = "General"):
         super().__init__(timeout=300)
         self.player_data = player_data
         self.uuid = uuid
+        self.current_tab = current_tab
+        self._build_buttons()
 
-    @discord.ui.button(label="General", style=discord.ButtonStyle.primary)
-    async def general_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = build_general_embed(self.player_data)
-        await interaction.response.edit_message(embed=embed, view=self)
+    def _build_buttons(self):
+        for tab in self.TABS:
+            if tab == self.current_tab:
+                continue  # Hide current tab button
+            button = discord.ui.Button(label=tab, style=discord.ButtonStyle.primary)
+            button.callback = self._make_callback(tab)
+            self.add_item(button)
 
-    @discord.ui.button(label="Raids", style=discord.ButtonStyle.primary)
-    async def raids_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = build_raids_embed(self.player_data)
-        await interaction.response.edit_message(embed=embed, view=self)
+    def _make_callback(self, tab: str):
+        async def callback(interaction: discord.Interaction):
+            embed = self._get_embed(tab)
+            new_view = ProfileView(self.player_data, self.uuid, current_tab=tab)
+            await interaction.response.edit_message(embed=embed, view=new_view)
+        return callback
 
-    @discord.ui.button(label="Rankings", style=discord.ButtonStyle.primary)
-    async def rankings_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = build_rankings_embed(self.player_data)
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    @discord.ui.button(label="Dungeons", style=discord.ButtonStyle.primary)
-    async def dungeons_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = build_dungeons_embed(self.player_data)
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    @discord.ui.button(label="Profs", style=discord.ButtonStyle.primary)
-    async def profs_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = build_profs_embed(self.player_data)
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    @discord.ui.button(label="Misc", style=discord.ButtonStyle.primary)
-    async def misc_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = build_misc_embed(self.player_data)
-        await interaction.response.edit_message(embed=embed, view=self)
+    def _get_embed(self, tab: str) -> discord.Embed:
+        if tab == "General":
+            return build_general_embed(self.player_data)
+        elif tab == "Raids":
+            return build_raids_embed(self.player_data)
+        elif tab == "Rankings":
+            return build_rankings_embed(self.player_data)
+        elif tab == "Dungeons":
+            return build_dungeons_embed(self.player_data)
+        elif tab == "Profs":
+            return build_profs_embed(self.player_data)
+        elif tab == "Misc":
+            return build_misc_embed(self.player_data)
+        return build_general_embed(self.player_data)
 
 
 def build_general_embed(data: dict) -> discord.Embed:
