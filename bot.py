@@ -206,6 +206,15 @@ def get_aspect_class(aspect_name: str, class_mapping: dict[str, str]) -> str | N
     return class_mapping.get(aspect_name)
 
 
+async def fetch_aspects_by_uuid(uuid: str):
+    """Fetch player aspects from WynnExtras API using UUID."""
+    # Remove hyphens from UUID for API call
+    clean_uuid = uuid.replace("-", "")
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{BASE_URL}/aspects?playerUuid={clean_uuid}") as resp:
+            return await resp.json() if resp.status == 200 else None
+
+
 async def fetch_wynncraft_player(uuid: str) -> dict | None:
     """Fetch full player data from Wynncraft API."""
     async with aiohttp.ClientSession() as session:
@@ -689,13 +698,14 @@ async def lootpool(interaction: discord.Interaction):
 
 # === Profile Viewer ===
 class ProfileView(discord.ui.View):
-    TABS = ["General", "Raids", "Rankings", "Dungeons", "Profs", "Misc"]
+    TABS = ["General", "Raids", "Rankings", "Dungeons", "Profs", "Aspects", "Misc"]
 
-    def __init__(self, player_data: dict, uuid: str, current_tab: str = "General"):
+    def __init__(self, player_data: dict, uuid: str, current_tab: str = "General", aspects_data: dict = None):
         super().__init__(timeout=300)
         self.player_data = player_data
         self.uuid = uuid
         self.current_tab = current_tab
+        self.aspects_data = aspects_data
         self._build_buttons()
 
     def _build_buttons(self):
@@ -708,12 +718,20 @@ class ProfileView(discord.ui.View):
 
     def _make_callback(self, tab: str):
         async def callback(interaction: discord.Interaction):
-            embed = self._get_embed(tab)
-            new_view = ProfileView(self.player_data, self.uuid, current_tab=tab)
-            await interaction.response.edit_message(embed=embed, view=new_view)
+            await interaction.response.defer()
+
+            # For Aspects tab, we need to fetch data
+            aspects_data = self.aspects_data
+            if tab == "Aspects" and not aspects_data:
+                # Fetch aspects from WynnExtras API
+                aspects_data = await fetch_aspects_by_uuid(self.uuid)
+
+            embed = await self._get_embed_async(tab, aspects_data)
+            new_view = ProfileView(self.player_data, self.uuid, current_tab=tab, aspects_data=aspects_data)
+            await interaction.edit_original_response(embed=embed, view=new_view)
         return callback
 
-    def _get_embed(self, tab: str) -> discord.Embed:
+    async def _get_embed_async(self, tab: str, aspects_data: dict = None) -> discord.Embed:
         if tab == "General":
             return build_general_embed(self.player_data)
         elif tab == "Raids":
@@ -724,6 +742,8 @@ class ProfileView(discord.ui.View):
             return build_dungeons_embed(self.player_data)
         elif tab == "Profs":
             return build_profs_embed(self.player_data)
+        elif tab == "Aspects":
+            return await build_aspects_embed(self.player_data, aspects_data)
         elif tab == "Misc":
             return build_misc_embed(self.player_data)
         return build_general_embed(self.player_data)
@@ -935,6 +955,78 @@ def build_profs_embed(data: dict) -> discord.Embed:
         crafting_text += f"{maxed}**{prof.title()}:** {level}/132 ({xp}%)\n"
 
     embed.add_field(name="Crafting", value=crafting_text, inline=True)
+
+    return embed
+
+
+# Max thresholds for aspects by rarity
+ASPECT_MAX_THRESHOLDS = {
+    "mythic": 15,
+    "fabled": 75,
+    "legendary": 150,
+}
+
+
+async def build_aspects_embed(player_data: dict, aspects_data: dict) -> discord.Embed:
+    """Build the Aspects tab embed showing maxed aspects per class."""
+    username = player_data.get("username", "Unknown")
+    embed = discord.Embed(title=f"🔥 {username}'s Aspects", color=0x8B008B)
+
+    if not aspects_data or "aspects" not in aspects_data:
+        embed.description = "No aspects data available.\nThis player hasn't uploaded aspects from the WynnExtras mod."
+        return embed
+
+    # Get class mapping from Wynncraft API
+    class_mapping = await get_aspect_class_mapping()
+
+    player_aspects = aspects_data.get("aspects", [])
+
+    # Count maxed per class
+    classes = ["warrior", "mage", "archer", "assassin", "shaman"]
+    class_stats = {c: {"total": 0, "maxed": 0, "maxed_names": []} for c in classes}
+
+    # Count total aspects per class from Wynncraft API
+    for aspect_name, aspect_class in class_mapping.items():
+        if aspect_class in class_stats:
+            class_stats[aspect_class]["total"] += 1
+
+    # Check which aspects the player has maxed
+    for aspect in player_aspects:
+        name = aspect.get("name", "")
+        amount = aspect.get("amount", 0)
+        rarity = aspect.get("rarity", "").lower()
+
+        aspect_class = class_mapping.get(name)
+        if not aspect_class or aspect_class not in class_stats:
+            continue
+
+        max_threshold = ASPECT_MAX_THRESHOLDS.get(rarity, 150)
+        if amount >= max_threshold:
+            class_stats[aspect_class]["maxed"] += 1
+            class_stats[aspect_class]["maxed_names"].append(name)
+
+    # Build summary
+    total_maxed = sum(s["maxed"] for s in class_stats.values())
+    total_aspects = sum(s["total"] for s in class_stats.values())
+
+    embed.description = f"**Total Maxed:** {total_maxed}/{total_aspects}\n"
+
+    # Add field for each class
+    for class_name in classes:
+        stats = class_stats[class_name]
+        emoji = CLASS_EMOJIS.get(class_name, "")
+        maxed = stats["maxed"]
+        total = stats["total"]
+
+        if total == 0:
+            continue
+
+        progress = "🌈 MAXED" if maxed == total else f"{maxed}/{total}"
+        embed.add_field(
+            name=f"{emoji} {class_name.title()}",
+            value=progress,
+            inline=True
+        )
 
     return embed
 
