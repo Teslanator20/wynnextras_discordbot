@@ -431,7 +431,7 @@ async def show_aspects_overview(interaction: discord.Interaction, edit: bool = F
 
     # Send or edit message with buttons
     if edit:
-        await interaction.edit_original_response(embed=embed, embeds=[embed], view=RaidButtonsView())
+        await interaction.edit_original_response(embeds=[embed], view=RaidButtonsView())
     else:
         await interaction.followup.send(embed=embed, view=RaidButtonsView())
 
@@ -494,7 +494,7 @@ async def show_aspects_overview_edit(interaction: discord.Interaction):
         if mythic_text:
             embed.add_field(name="Mythic Aspects", value=mythic_text.strip(), inline=False)
 
-    await interaction.edit_original_response(embed=embed, embeds=[embed], view=RaidButtonsView())
+    await interaction.edit_original_response(embeds=[embed], view=RaidButtonsView())
 
 
 async def show_raid_pool_edit(interaction: discord.Interaction, raid_type: str):
@@ -530,7 +530,7 @@ async def show_raid_pool_edit(interaction: discord.Interaction, raid_type: str):
 
     if not aspects_list:
         embed.description = "No aspects in the loot pool."
-        await interaction.edit_original_response(embed=embed, embeds=[embed], view=BackToOverviewView())
+        await interaction.edit_original_response(embeds=[embed], view=BackToOverviewView())
         return
 
     embeds = [embed]
