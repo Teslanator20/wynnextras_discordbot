@@ -74,21 +74,6 @@ CLASS_ITEM_EMOJIS = {
 # Max amounts for each rarity
 MAX_AMOUNTS = {"Mythic": 15, "Fabled": 75, "Legendary": 150}
 
-# Tier thresholds for each rarity (amount needed to reach each tier)
-TIER_THRESHOLDS = {
-    "Mythic": [0, 5, 15],       # Tier I: 0-4, Tier II: 5-14, MAX: 15+
-    "Fabled": [0, 15, 75],      # Tier I: 0-14, Tier II: 15-74, MAX: 75+
-    "Legendary": [0, 5, 30, 150], # Tier I: 0-4, Tier II: 5-29, Tier III: 30-149, MAX: 150+
-}
-
-# Weights per remaining aspect based on rarity and current tier
-# Higher = more valuable to get
-TIER_WEIGHTS = {
-    "Mythic": [20.0, 13.55],      # Tier I->II weight, Tier II->MAX weight
-    "Fabled": [10.4, 0.65],       # Tier I->II, Tier II->MAX
-    "Legendary": [15.0, 1.5, 0.905], # Tier I->II, II->III, III->MAX
-}
-
 # Valid current dungeons (API has old removed dungeons we don't want to show)
 VALID_DUNGEONS = {
     # Normal dungeons
@@ -306,14 +291,31 @@ CLASS_EMOJIS_PV = {
 
 
 # === Score Calculation ===
-def get_current_tier(rarity: str, amount: int) -> int:
-    """Get current tier (1-based) for an aspect."""
-    thresholds = TIER_THRESHOLDS.get(rarity, [0])
-    tier = 1
-    for i, threshold in enumerate(thresholds):
-        if amount >= threshold:
-            tier = i + 1
-    return tier
+# New formula from WynnExtras mod
+GLOBAL_EXPONENT = 1.08
+NORMALIZATION_FACTOR = 0.92
+
+# Drop probability per rarity
+DROP_PROBS = {
+    "mythic": 0.08,
+    "fabled": 0.46,
+    "legendary": 0.46,
+}
+
+# Weight per rarity
+RARITY_WEIGHTS = {
+    "mythic": 1.25,
+    "fabled": 1.00,
+    "legendary": 0.95,
+}
+
+# Raid-specific multipliers
+RAID_MULTIPLIERS = {
+    "TCC": 0.85,
+    "TNA": 1.00,
+    "NOTG": 1.22,
+    "NOL": 1.30,
+}
 
 
 def get_remaining_to_max(rarity: str, amount: int) -> int:
@@ -323,32 +325,24 @@ def get_remaining_to_max(rarity: str, amount: int) -> int:
 
 
 def calculate_aspect_score(rarity: str, amount: int) -> float:
-    """Calculate score contribution for a single aspect (how much work remains)."""
-    if amount >= MAX_AMOUNTS.get(rarity, 999):
+    """Calculate score contribution for a single aspect using new formula."""
+    rarity_lower = rarity.lower()
+    max_amt = MAX_AMOUNTS.get(rarity, 999)
+
+    if amount >= max_amt:
         return 0.0  # Already maxed, no score
 
-    thresholds = TIER_THRESHOLDS.get(rarity, [0])
-    weights = TIER_WEIGHTS.get(rarity, [1.0])
+    total_remaining = max_amt - amount
+    drop_prob = DROP_PROBS.get(rarity_lower, 0.46)
+    weight = RARITY_WEIGHTS.get(rarity_lower, 1.0)
 
-    score = 0.0
-    current_amount = amount
-
-    # Calculate score for each tier transition
-    for i in range(len(thresholds) - 1):
-        tier_start = thresholds[i]
-        tier_end = thresholds[i + 1] if i + 1 < len(thresholds) else MAX_AMOUNTS.get(rarity, 999)
-        weight = weights[i] if i < len(weights) else weights[-1]
-
-        if current_amount < tier_end:
-            # Player is in or before this tier
-            start = max(current_amount, tier_start)
-            remaining_in_tier = tier_end - start
-            score += remaining_in_tier * weight
-
-    return score
+    # contribution = (totalRemaining / dropProb * weight) ^ GLOBAL_EXPONENT
+    expected_pulls = total_remaining / drop_prob
+    weighted = expected_pulls * weight
+    return weighted ** GLOBAL_EXPONENT
 
 
-def calculate_pool_score(pool_aspects: list, player_aspects: dict) -> float:
+def calculate_pool_score(pool_aspects: list, player_aspects: dict, raid_type: str = None) -> float:
     """Calculate total score for a loot pool based on player progress."""
     total_score = 0.0
 
@@ -362,7 +356,9 @@ def calculate_pool_score(pool_aspects: list, player_aspects: dict) -> float:
         # Add score contribution
         total_score += calculate_aspect_score(rarity, player_amount)
 
-    return total_score
+    # Apply raid multiplier and normalization factor
+    raid_multiplier = RAID_MULTIPLIERS.get(raid_type, 1.0) if raid_type else 1.0
+    return total_score * raid_multiplier * NORMALIZATION_FACTOR
 
 
 def sort_aspects_by_rarity(aspects: list) -> list:
@@ -735,7 +731,7 @@ async def show_raid_pool_edit(interaction: discord.Interaction, raid_type: str, 
                 amount = pa.get("amount", 0)
                 player_aspects[name] = amount
 
-            pool_score = calculate_pool_score(aspects_list, player_aspects)
+            pool_score = calculate_pool_score(aspects_list, player_aspects, raid_type)
             if pool_score == 0:
                 score_text = "**Your Score:** MAXED"
             else:
@@ -839,7 +835,7 @@ async def show_raid_pool(interaction: discord.Interaction, raid_type: str, follo
             for pa in player_data.get("aspects", []):
                 player_aspects[pa.get("name", "")] = pa.get("amount", 0)
 
-            pool_score = calculate_pool_score(aspects_list, player_aspects)
+            pool_score = calculate_pool_score(aspects_list, player_aspects, raid_type)
             if pool_score == 0:
                 score_text = "**Your Score:** MAXED"
             else:
