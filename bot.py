@@ -554,24 +554,23 @@ async def show_aspects_overview(interaction: discord.Interaction, edit: bool = F
         color=0x5C005C  # Mythic purple
     )
 
-    # Group mythics by raid, each aspect on its own line
+    # Group mythics by raid, each raid in its own field
     if mythics:
         # Fetch class mapping to get flame emojis
         class_mapping = await get_aspect_class_mapping()
 
-        mythic_text = ""
         for raid_type in RAID_TYPES:
             raid_mythics = [m for m in mythics if m.get("raid") == raid_type]
             if raid_mythics:
+                aspect_lines = []
                 for m in raid_mythics:
                     aspect_name = m['name']
                     aspect_class = get_aspect_class(aspect_name, class_mapping)
                     flame_emoji = get_aspect_emoji(aspect_class)
-                    mythic_text += f"{RAID_EMOJIS[raid_type]} {raid_type} {flame_emoji} {aspect_name}\n"
-                mythic_text += "\n"  # Extra line between raids
+                    aspect_lines.append(f"{flame_emoji} {aspect_name}")
 
-        if mythic_text:
-            embed.add_field(name="Mythic Aspects", value=mythic_text.strip(), inline=False)
+                field_name = f"{RAID_EMOJIS[raid_type]} {raid_type}"
+                embed.add_field(name=field_name, value="\n".join(aspect_lines), inline=False)
 
     # Send or edit message with buttons
     if edit:
@@ -698,19 +697,18 @@ async def show_aspects_overview_edit(interaction: discord.Interaction, original_
         # Fetch class mapping to get flame emojis
         class_mapping = await get_aspect_class_mapping()
 
-        mythic_text = ""
         for raid_type in RAID_TYPES:
             raid_mythics = [m for m in mythics if m.get("raid") == raid_type]
             if raid_mythics:
+                aspect_lines = []
                 for m in raid_mythics:
                     aspect_name = m['name']
                     aspect_class = get_aspect_class(aspect_name, class_mapping)
                     flame_emoji = get_aspect_emoji(aspect_class)
-                    mythic_text += f"{RAID_EMOJIS[raid_type]} {raid_type} {flame_emoji} {aspect_name}\n"
-                mythic_text += "\n"
+                    aspect_lines.append(f"{flame_emoji} {aspect_name}")
 
-        if mythic_text:
-            embed.add_field(name="Mythic Aspects", value=mythic_text.strip(), inline=False)
+                field_name = f"{RAID_EMOJIS[raid_type]} {raid_type}"
+                embed.add_field(name=field_name, value="\n".join(aspect_lines), inline=False)
 
     await interaction.edit_original_response(embeds=[embed], view=RaidButtonsView(original_user_id=original_user_id))
 
