@@ -600,6 +600,46 @@ async def raidpool(interaction: discord.Interaction, raid: app_commands.Choice[s
     await show_raid_pool(interaction, raid.value, followup=True, original_user_id=interaction.user.id)
 
 
+class LinkAccountModal(discord.ui.Modal, title="Link Minecraft Account"):
+    username = discord.ui.TextInput(
+        label="Minecraft Username",
+        placeholder="Enter your Minecraft username...",
+        min_length=3,
+        max_length=16,
+        required=True
+    )
+
+    def __init__(self, raid_type: str = None, original_user_id: int = None):
+        super().__init__()
+        self.raid_type = raid_type
+        self.original_user_id = original_user_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        player_name = self.username.value.strip()
+
+        # Try to fetch player to verify they exist
+        uuid = await fetch_player_uuid(player_name)
+        if not uuid:
+            await interaction.response.send_message(
+                f"Could not find player **{player_name}**. Please check the spelling.",
+                ephemeral=True
+            )
+            return
+
+        # Link the account
+        set_linked_player(interaction.user.id, player_name)
+
+        # Send success message and refresh the view
+        await interaction.response.send_message(
+            f"Successfully linked to **{player_name}**!",
+            ephemeral=True
+        )
+
+        # Refresh the raid pool view to show the new linked state
+        if self.raid_type:
+            await show_raid_pool_edit(interaction, self.raid_type, original_user_id=self.original_user_id)
+
+
 class BackToOverviewView(discord.ui.View):
     # Filter modes: "all", "maxed", "non_maxed"
     def __init__(self, raid_type: str = None, filter_mode: str = "all", is_linked: bool = False, original_user_id: int = None):
@@ -659,13 +699,9 @@ class BackToOverviewView(discord.ui.View):
         await show_raid_pool_edit(interaction, self.raid_type, filter_mode="all", original_user_id=self.original_user_id)
 
     async def link_callback(self, interaction: discord.Interaction):
-        # Link button is always allowed for anyone
-        embed = discord.Embed(
-            title="🔗 Link Your Account",
-            description="Use `/link <username>` to link your Minecraft account.\n\nOnce linked, you'll see:\n• Your personalized score\n• Which aspects you've maxed\n• Filter options for maxed/non-maxed",
-            color=0x00FF00
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        # Open modal for linking account
+        modal = LinkAccountModal(raid_type=self.raid_type, original_user_id=self.original_user_id)
+        await interaction.response.send_modal(modal)
 
 
 async def show_aspects_overview_edit(interaction: discord.Interaction, original_user_id: int = None):
