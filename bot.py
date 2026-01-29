@@ -664,15 +664,14 @@ class LinkAccountModal(discord.ui.Modal, title="Link Minecraft Account"):
         # Link the account
         await set_linked_player(interaction.user.id, player_name)
 
-        # Send success message and refresh the view
-        await interaction.response.send_message(
-            f"Successfully linked to **{player_name}**!",
-            ephemeral=True
-        )
+        # Defer the response so we can edit the original message
+        await interaction.response.defer()
 
-        # Refresh the raid pool view to show the new linked state
+        # Refresh the view to show the score
         if self.raid_type:
             await show_raid_pool_edit(interaction, self.raid_type, original_user_id=self.original_user_id)
+        else:
+            await show_aspects_overview_edit(interaction, original_user_id=self.original_user_id)
 
 
 class BackToOverviewView(discord.ui.View):
