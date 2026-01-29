@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 import aiohttp
+import asyncpg
 import os
 import json
 from datetime import datetime, timedelta, timezone
@@ -10,7 +11,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_URL = "http://wynnextras.com"
-LINKED_USERS_FILE = "linked_users.json"
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Database connection pool
+db_pool: asyncpg.Pool = None
 
 RAID_TYPES = ["NOTG", "NOL", "TCC", "TNA"]
 RAID_NAMES = {
@@ -103,37 +107,55 @@ intents = discord.Intents.default()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
-# === User Linking ===
-def load_linked_users() -> dict:
-    if os.path.exists(LINKED_USERS_FILE):
-        try:
-            with open(LINKED_USERS_FILE, "r") as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
+# === User Linking (PostgreSQL) ===
+async def init_db():
+    """Initialize database connection pool and create tables."""
+    global db_pool
+    if DATABASE_URL:
+        db_pool = await asyncpg.create_pool(DATABASE_URL)
+        async with db_pool.acquire() as conn:
+            await conn.execute('''
+                CREATE TABLE IF NOT EXISTS linked_users (
+                    discord_id BIGINT PRIMARY KEY,
+                    player_name TEXT NOT NULL
+                )
+            ''')
+        print("Database connected and initialized!")
+    else:
+        print("WARNING: DATABASE_URL not set, user linking will not persist!")
 
 
-def save_linked_users(data: dict):
-    with open(LINKED_USERS_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+async def get_linked_player(discord_id: int) -> str | None:
+    if not db_pool:
+        return None
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            'SELECT player_name FROM linked_users WHERE discord_id = $1',
+            discord_id
+        )
+        return row['player_name'] if row else None
 
 
-def get_linked_player(discord_id: int) -> str | None:
-    return load_linked_users().get(str(discord_id))
+async def set_linked_player(discord_id: int, player_name: str):
+    if not db_pool:
+        return
+    async with db_pool.acquire() as conn:
+        await conn.execute('''
+            INSERT INTO linked_users (discord_id, player_name)
+            VALUES ($1, $2)
+            ON CONFLICT (discord_id) DO UPDATE SET player_name = $2
+        ''', discord_id, player_name)
 
 
-def set_linked_player(discord_id: int, player_name: str):
-    users = load_linked_users()
-    users[str(discord_id)] = player_name
-    save_linked_users(users)
-
-
-def remove_linked_player(discord_id: int) -> str | None:
-    users = load_linked_users()
-    old = users.pop(str(discord_id), None)
-    save_linked_users(users)
-    return old
+async def remove_linked_player(discord_id: int) -> str | None:
+    if not db_pool:
+        return None
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            'DELETE FROM linked_users WHERE discord_id = $1 RETURNING player_name',
+            discord_id
+        )
+        return row['player_name'] if row else None
 
 
 # === API Functions ===
@@ -414,6 +436,9 @@ async def fetch_all_mythics() -> list[dict]:
 # === Bot Events ===
 @bot.event
 async def on_ready():
+    # Initialize database connection
+    await init_db()
+
     print(f"Logged in as {bot.user}")
     print(f"Bot ID: {bot.user.id}")
     print(f"Guilds: {[g.name for g in bot.guilds]}")
@@ -627,7 +652,7 @@ class LinkAccountModal(discord.ui.Modal, title="Link Minecraft Account"):
             return
 
         # Link the account
-        set_linked_player(interaction.user.id, player_name)
+        await set_linked_player(interaction.user.id, player_name)
 
         # Send success message and refresh the view
         await interaction.response.send_message(
@@ -738,7 +763,7 @@ async def show_aspects_overview_edit(interaction: discord.Interaction, original_
 async def show_raid_pool_edit(interaction: discord.Interaction, raid_type: str, filter_mode: str = "all", original_user_id: int = None):
     """Show loot pool for a specific raid (edit version)."""
     data = await fetch_loot_pool(raid_type)
-    linked_player = get_linked_player(interaction.user.id)
+    linked_player = await get_linked_player(interaction.user.id)
     is_linked = bool(linked_player)
 
     if not data:
@@ -840,7 +865,7 @@ async def show_raid_pool_edit(interaction: discord.Interaction, raid_type: str, 
 
 async def show_raid_pool(interaction: discord.Interaction, raid_type: str, followup: bool = True, edit: bool = False, filter_mode: str = "all", original_user_id: int = None):
     """Show loot pool for a specific raid."""
-    linked_player = get_linked_player(interaction.user.id)
+    linked_player = await get_linked_player(interaction.user.id)
     is_linked = bool(linked_player)
 
     data = await fetch_loot_pool(raid_type)
@@ -1392,7 +1417,7 @@ async def pv(interaction: discord.Interaction, player: str = None):
 
     # If no player specified, use linked account
     if not player:
-        player = get_linked_player(interaction.user.id)
+        player = await get_linked_player(interaction.user.id)
         if not player:
             await interaction.followup.send("No player specified and you don't have a linked account. Use `/link` first or specify a player name.", ephemeral=True)
             return
@@ -1420,9 +1445,9 @@ async def pv(interaction: discord.Interaction, player: str = None):
 @app_commands.describe(player="Minecraft username to link (leave empty to see current link)")
 async def link(interaction: discord.Interaction, player: str = None):
     discord_id = interaction.user.id
-    current_link = get_linked_player(discord_id)
 
     if not player:
+        current_link = await get_linked_player(discord_id)
         if current_link:
             embed = discord.Embed(
                 title="🔗 Account Linked",
@@ -1446,7 +1471,7 @@ async def link(interaction: discord.Interaction, player: str = None):
         return
 
     player_name = data.get("playerName", player)
-    set_linked_player(discord_id, player_name)
+    await set_linked_player(discord_id, player_name)
 
     embed = discord.Embed(
         title="✅ Account Linked!",
@@ -1459,11 +1484,12 @@ async def link(interaction: discord.Interaction, player: str = None):
 
 @bot.tree.command(name="unlink", description="Unlink your Discord from your Minecraft account")
 async def unlink(interaction: discord.Interaction):
-    old_name = remove_linked_player(interaction.user.id)
+    await interaction.response.defer(ephemeral=True)
+    old_name = await remove_linked_player(interaction.user.id)
     if old_name:
-        await interaction.response.send_message(f"✅ Unlinked from **{old_name}**.", ephemeral=True)
+        await interaction.followup.send(f"✅ Unlinked from **{old_name}**.", ephemeral=True)
     else:
-        await interaction.response.send_message("You don't have a linked account.", ephemeral=True)
+        await interaction.followup.send("You don't have a linked account.", ephemeral=True)
 
 
 @bot.tree.command(name="emojitest", description="Test if animated emojis work")
