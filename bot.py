@@ -111,16 +111,21 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 async def init_db():
     """Initialize database connection pool and create tables."""
     global db_pool
+    print(f"DATABASE_URL set: {bool(DATABASE_URL)}")
     if DATABASE_URL:
-        db_pool = await asyncpg.create_pool(DATABASE_URL)
-        async with db_pool.acquire() as conn:
-            await conn.execute('''
-                CREATE TABLE IF NOT EXISTS linked_users (
-                    discord_id BIGINT PRIMARY KEY,
-                    player_name TEXT NOT NULL
-                )
-            ''')
-        print("Database connected and initialized!")
+        try:
+            db_pool = await asyncpg.create_pool(DATABASE_URL)
+            async with db_pool.acquire() as conn:
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS linked_users (
+                        discord_id BIGINT PRIMARY KEY,
+                        player_name TEXT NOT NULL
+                    )
+                ''')
+            print("Database connected and initialized!")
+        except Exception as e:
+            print(f"ERROR connecting to database: {e}")
+            db_pool = None
     else:
         print("WARNING: DATABASE_URL not set, user linking will not persist!")
 
