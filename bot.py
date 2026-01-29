@@ -625,12 +625,8 @@ class BackToOverviewView(discord.ui.View):
         # Only show filter buttons if we have a raid type
         if self.raid_type:
             if self.is_linked:
-                # User is linked - show filter buttons
+                # User is linked - show filter button
                 if self.filter_mode == "all":
-                    maxed_btn = discord.ui.Button(label="Only Maxed", style=discord.ButtonStyle.success)
-                    maxed_btn.callback = self.maxed_callback
-                    self.add_item(maxed_btn)
-
                     non_maxed_btn = discord.ui.Button(label="Only Non-Maxed", style=discord.ButtonStyle.danger)
                     non_maxed_btn.callback = self.non_maxed_callback
                     self.add_item(non_maxed_btn)
@@ -649,12 +645,6 @@ class BackToOverviewView(discord.ui.View):
             return
         await interaction.response.defer()
         await show_aspects_overview_edit(interaction, original_user_id=self.original_user_id)
-
-    async def maxed_callback(self, interaction: discord.Interaction):
-        if not await self._check_user(interaction):
-            return
-        await interaction.response.defer()
-        await show_raid_pool_edit(interaction, self.raid_type, filter_mode="maxed", original_user_id=self.original_user_id)
 
     async def non_maxed_callback(self, interaction: discord.Interaction):
         if not await self._check_user(interaction):
