@@ -5,10 +5,15 @@ import aiohttp
 import asyncpg
 import os
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 BASE_URL = "http://wynnextras.com"
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -111,7 +116,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 async def init_db():
     """Initialize database connection pool and create tables."""
     global db_pool
-    print(f"DATABASE_URL set: {bool(DATABASE_URL)}")
+    logger.info(f"DATABASE_URL set: {bool(DATABASE_URL)}")
     if DATABASE_URL:
         try:
             db_pool = await asyncpg.create_pool(DATABASE_URL)
@@ -122,12 +127,12 @@ async def init_db():
                         player_name TEXT NOT NULL
                     )
                 ''')
-            print("Database connected and initialized!")
+            logger.info("Database connected and initialized!")
         except Exception as e:
-            print(f"ERROR connecting to database: {e}")
+            logger.error(f"ERROR connecting to database: {e}")
             db_pool = None
     else:
-        print("WARNING: DATABASE_URL not set, user linking will not persist!")
+        logger.warning("DATABASE_URL not set, user linking will not persist!")
 
 
 async def get_linked_player(discord_id: int) -> str | None:
@@ -444,18 +449,18 @@ async def on_ready():
     # Initialize database connection
     await init_db()
 
-    print(f"Logged in as {bot.user}")
-    print(f"Bot ID: {bot.user.id}")
-    print(f"Guilds: {[g.name for g in bot.guilds]}")
+    logger.info(f"Logged in as {bot.user}")
+    logger.info(f"Bot ID: {bot.user.id}")
+    logger.info(f"Guilds: {[g.name for g in bot.guilds]}")
 
     # Set bot status
     await bot.change_presence(activity=discord.Game(name="Using WynnExtras"))
 
     try:
         synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} command(s)")
+        logger.info(f"Synced {len(synced)} command(s)")
     except Exception as e:
-        print(f"Failed to sync: {e}")
+        logger.error(f"Failed to sync: {e}")
 
 
 # === Commands ===
