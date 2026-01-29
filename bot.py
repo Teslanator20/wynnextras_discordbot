@@ -447,41 +447,56 @@ async def gambits(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 
-class LootPoolView(discord.ui.View):
-    def __init__(self, original_user_id: int = None):
-        super().__init__(timeout=60)
-        self.original_user_id = original_user_id
-
-        # Raid select dropdown
-        raid_select = discord.ui.Select(
-            placeholder="Select Raid...",
-            options=[
-                discord.SelectOption(label="Nest of the Grootslangs", value="NOTG", emoji=discord.PartialEmoji(name="notg", id=1466160820638584885)),
-                discord.SelectOption(label="Orphion's Nexus of Light", value="NOL", emoji=discord.PartialEmoji(name="nol", id=1466160862296543458)),
-                discord.SelectOption(label="The Canyon Colossus", value="TCC", emoji=discord.PartialEmoji(name="tcc", id=1466160902037438627)),
-                discord.SelectOption(label="The Nameless Anomaly", value="TNA", emoji=discord.PartialEmoji(name="tna", id=1466160934937432409)),
-            ]
-        )
-        raid_select.callback = self.raid_select_callback
-        self.add_item(raid_select)
-
-        # Camp select dropdown (disabled - coming soon)
-        camp_select = discord.ui.Select(
-            placeholder="Select Camp (coming soon)",
-            options=[
-                discord.SelectOption(label="Coming Soon", value="placeholder", emoji=discord.PartialEmoji(name="lootrun", id=1466173956884136188)),
-            ],
-            disabled=True
-        )
-        self.add_item(camp_select)
-
-    async def raid_select_callback(self, interaction: discord.Interaction):
-        if self.original_user_id and interaction.user.id != self.original_user_id:
-            await interaction.response.send_message("Only the person who used the command can use these buttons.", ephemeral=True)
-            return
-        raid_type = self.children[0].values[0]
-        await interaction.response.defer()
-        await show_raid_pool_edit(interaction, raid_type, original_user_id=self.original_user_id)
+# =============================================================================
+# LootPoolView - COMMENTED OUT FOR FUTURE USE
+# This view provides a dropdown selector for raids and camps (coming soon).
+# Currently /lootpool uses the same behavior as /raidpool (shows overview).
+# Uncomment this class when camp loot pools are implemented.
+# =============================================================================
+# class LootPoolView(discord.ui.View):
+#     """
+#     View with two dropdowns:
+#     - Select Raid: Shows raid loot pools (NOTG, NOL, TCC, TNA)
+#     - Select Camp: Coming soon - will show lootrun camp pools
+#
+#     Usage:
+#         await interaction.followup.send(embed=embed, view=LootPoolView(original_user_id=interaction.user.id))
+#     """
+#     def __init__(self, original_user_id: int = None):
+#         super().__init__(timeout=60)
+#         self.original_user_id = original_user_id
+#
+#         # Raid select dropdown
+#         raid_select = discord.ui.Select(
+#             placeholder="Select Raid...",
+#             options=[
+#                 discord.SelectOption(label="Nest of the Grootslangs", value="NOTG", emoji=discord.PartialEmoji(name="notg", id=1466160820638584885)),
+#                 discord.SelectOption(label="Orphion's Nexus of Light", value="NOL", emoji=discord.PartialEmoji(name="nol", id=1466160862296543458)),
+#                 discord.SelectOption(label="The Canyon Colossus", value="TCC", emoji=discord.PartialEmoji(name="tcc", id=1466160902037438627)),
+#                 discord.SelectOption(label="The Nameless Anomaly", value="TNA", emoji=discord.PartialEmoji(name="tna", id=1466160934937432409)),
+#             ]
+#         )
+#         raid_select.callback = self.raid_select_callback
+#         self.add_item(raid_select)
+#
+#         # Camp select dropdown (disabled - coming soon)
+#         camp_select = discord.ui.Select(
+#             placeholder="Select Camp (coming soon)",
+#             options=[
+#                 discord.SelectOption(label="Coming Soon", value="placeholder", emoji=discord.PartialEmoji(name="lootrun", id=1466173956884136188)),
+#             ],
+#             disabled=True
+#         )
+#         self.add_item(camp_select)
+#
+#     async def raid_select_callback(self, interaction: discord.Interaction):
+#         if self.original_user_id and interaction.user.id != self.original_user_id:
+#             await interaction.response.send_message("Only the person who used the command can use these buttons.", ephemeral=True)
+#             return
+#         raid_type = self.children[0].values[0]
+#         await interaction.response.defer()
+#         await show_raid_pool_edit(interaction, raid_type, original_user_id=self.original_user_id)
+# =============================================================================
 
 
 class RaidButtonsView(discord.ui.View):
@@ -541,12 +556,18 @@ async def show_aspects_overview(interaction: discord.Interaction, edit: bool = F
 
     # Group mythics by raid, each aspect on its own line
     if mythics:
+        # Fetch class mapping to get flame emojis
+        class_mapping = await get_aspect_class_mapping()
+
         mythic_text = ""
         for raid_type in RAID_TYPES:
             raid_mythics = [m for m in mythics if m.get("raid") == raid_type]
             if raid_mythics:
                 for m in raid_mythics:
-                    mythic_text += f"{RAID_EMOJIS[raid_type]} {m['name']}\n"
+                    aspect_name = m['name']
+                    aspect_class = get_aspect_class(aspect_name, class_mapping)
+                    flame_emoji = get_aspect_emoji(aspect_class)
+                    mythic_text += f"{RAID_EMOJIS[raid_type]} {raid_type} {flame_emoji} {aspect_name}\n"
                 mythic_text += "\n"  # Extra line between raids
 
         if mythic_text:
@@ -674,12 +695,18 @@ async def show_aspects_overview_edit(interaction: discord.Interaction, original_
     )
 
     if mythics:
+        # Fetch class mapping to get flame emojis
+        class_mapping = await get_aspect_class_mapping()
+
         mythic_text = ""
         for raid_type in RAID_TYPES:
             raid_mythics = [m for m in mythics if m.get("raid") == raid_type]
             if raid_mythics:
                 for m in raid_mythics:
-                    mythic_text += f"{RAID_EMOJIS[raid_type]} {m['name']}\n"
+                    aspect_name = m['name']
+                    aspect_class = get_aspect_class(aspect_name, class_mapping)
+                    flame_emoji = get_aspect_emoji(aspect_class)
+                    mythic_text += f"{RAID_EMOJIS[raid_type]} {raid_type} {flame_emoji} {aspect_name}\n"
                 mythic_text += "\n"
 
         if mythic_text:
@@ -911,24 +938,16 @@ async def show_raid_pool(interaction: discord.Interaction, raid_type: str, follo
     app_commands.Choice(name="The Canyon Colossus (TCC)", value="TCC"),
     app_commands.Choice(name="The Nameless Anomaly (TNA)", value="TNA"),
 ])
-async def lootpool(
-    interaction: discord.Interaction,
-    pool: app_commands.Choice[str] = None
-):
+async def lootpool(interaction: discord.Interaction, pool: app_commands.Choice[str] = None):
+    """View loot pools - works exactly like /raidpool."""
     await interaction.response.defer()
 
-    # If pool is specified, show that raid's loot pool
-    if pool:
-        await show_raid_pool(interaction, pool.value, original_user_id=interaction.user.id)
+    # If no pool specified, show the overview (same as /raidpool)
+    if pool is None:
+        await show_aspects_overview(interaction, original_user_id=interaction.user.id)
         return
 
-    # No parameters - show selection menu
-    embed = discord.Embed(
-        title="<:lootrun:1466173956884136188> Loot Pool Viewer",
-        description="Select a loot pool to view:",
-        color=0x5865F2
-    )
-    await interaction.followup.send(embed=embed, view=LootPoolView(original_user_id=interaction.user.id))
+    await show_raid_pool(interaction, pool.value, followup=True, original_user_id=interaction.user.id)
 
 
 # === Profile Viewer ===
