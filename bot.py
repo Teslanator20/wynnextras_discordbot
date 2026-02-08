@@ -29,6 +29,26 @@ RAID_NAMES = {
     "TNA": "The Nameless Anomaly"
 }
 
+# Lootrun types and names
+LOOTRUN_TYPES = ["SE", "SI", "MH", "CORK", "COTL"]
+LOOTRUN_NAMES = {
+    "SE": "Silent Expanse",
+    "SI": "Sky Islands",
+    "MH": "Molten Heights",
+    "CORK": "Corkus",
+    "COTL": "Canyon of the Lost"
+}
+
+LOOTRUN_EMOJIS = {
+    "SE": "<:lootrun:1466173956884136188>",
+    "SI": "<:lootrun:1466173956884136188>",
+    "MH": "<:lootrun:1466173956884136188>",
+    "CORK": "<:lootrun:1466173956884136188>",
+    "COTL": "<:lootrun:1466173956884136188>",
+}
+
+LOOTRUN_EMOJI_ID = 1466173956884136188
+
 RAID_EMOJIS = {
     "NOTG": "<:notg:1466160820638584885>",
     "NOL": "<:nol:1466160862296543458>",
@@ -195,6 +215,47 @@ async def fetch_loot_pool(raid_type: str):
             return None
 
 
+# Cache for lootrun loot pools
+_lootrun_pool_cache: dict[str, dict] = {}
+_lootrun_pool_cache_time: dict[str, float] = {}
+LOOTRUN_POOL_CACHE_TTL = 300  # 5 minutes
+
+
+async def fetch_lootrun_pool(lootrun_type: str):
+    """Fetch lootrun loot pool from WynnExtras API."""
+    import time
+    now = time.time()
+
+    # Check cache first
+    cache_key = f"lootrun_{lootrun_type}"
+    if cache_key in _lootrun_pool_cache:
+        cache_time = _lootrun_pool_cache_time.get(cache_key, 0)
+        if (now - cache_time) < LOOTRUN_POOL_CACHE_TTL:
+            return _lootrun_pool_cache[cache_key]
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(f"{BASE_URL}/lootrun/loot-pool?lootrunType={lootrun_type}") as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                _lootrun_pool_cache[cache_key] = data
+                _lootrun_pool_cache_time[cache_key] = now
+                return data
+            return None
+
+
+async def fetch_all_lootrun_pools() -> dict[str, list]:
+    """Fetch loot pools from all lootruns (parallel)."""
+    import asyncio
+
+    results = await asyncio.gather(*[fetch_lootrun_pool(lr_type) for lr_type in LOOTRUN_TYPES])
+
+    all_pools = {}
+    for lr_type, data in zip(LOOTRUN_TYPES, results):
+        if data and "items" in data:
+            all_pools[lr_type] = data["items"]
+    return all_pools
+
+
 async def fetch_player_aspects(player_name: str):
     async with aiohttp.ClientSession() as session:
         async with session.get(f"{BASE_URL}/aspects/list") as resp:
@@ -323,31 +384,81 @@ CLASS_EMOJIS_PV = {
 
 
 # === Score Calculation ===
-# New formula from WynnExtras mod
-GLOBAL_EXPONENT = 1.08
-NORMALIZATION_FACTOR = 0.92
+# Tier-based weight system matching WynnExtras 1.21.11 mod
 
-# Drop probability per rarity
-DROP_PROBS = {
-    "mythic": 0.08,
-    "fabled": 0.46,
-    "legendary": 0.46,
+# Tier thresholds for each rarity
+# Mythic: Tier 1 = 1, Tier 2 = 5 (1+4), Tier 3 = 15 (5+10) - MAX
+# Fabled: Tier 1 = 1, Tier 2 = 15 (1+14), Tier 3 = 75 (15+60) - MAX
+# Legendary: Tier 1 = 1, Tier 2 = 5 (1+4), Tier 3 = 30 (5+25), Tier 4 = 150 (30+120) - MAX
+TIER_THRESHOLDS = {
+    "mythic": [1, 5, 15],      # Tier I, II, III (max)
+    "fabled": [1, 15, 75],     # Tier I, II, III (max)
+    "legendary": [1, 5, 30, 150],  # Tier I, II, III, IV (max)
 }
 
-# Weight per rarity
-RARITY_WEIGHTS = {
-    "mythic": 1.25,
-    "fabled": 1.00,
-    "legendary": 0.95,
+# Tier weights based on rarity and tier progression
+# Key format: "{rarity}_{current_tier}_{target_tier}"
+TIER_WEIGHTS = {
+    # Mythic tier progressions
+    "mythic_1_2": 13.55,
+    "mythic_2_3": 10.00,
+    "mythic_1_1": 13.55,
+    "mythic_2_2": 10.0,
+    # Fabled tier progressions
+    "fabled_1_2": 0.65,
+    "fabled_2_3": 0.5,
+    "fabled_1_1": 6.05,
+    "fabled_2_2": 0.50,
+    # Legendary tier progressions
+    "legendary_1_2": 13.0,
+    "legendary_2_3": 1.5,
+    "legendary_3_4": 0.905,
+    "legendary_1_1": 13.0,
+    "legendary_2_2": 5.0,
+    "legendary_3_3": 1.5,
+    "legendary_4_4": 0.905,
 }
 
-# Raid-specific multipliers
-RAID_MULTIPLIERS = {
-    "TCC": 0.85,
-    "TNA": 1.00,
-    "NOTG": 1.22,
-    "NOL": 1.30,
-}
+
+def get_tier_info(rarity: str, amount: int) -> tuple[int, int, int]:
+    """
+    Get tier info for an aspect based on rarity and amount owned.
+    Returns (current_tier, target_tier, remaining_in_tier)
+    """
+    rarity_lower = rarity.lower()
+    thresholds = TIER_THRESHOLDS.get(rarity_lower, [1, 15, 75])
+    max_amount = thresholds[-1]
+
+    if amount >= max_amount:
+        return (0, 0, 0)  # Maxed
+
+    # Find current tier and remaining
+    current_tier = 1
+    for i, threshold in enumerate(thresholds):
+        if amount < threshold:
+            break
+        current_tier = i + 1
+
+    # Calculate remaining in current tier progression
+    if current_tier < len(thresholds):
+        target_tier = current_tier + 1
+        tier_start = thresholds[current_tier - 1] if current_tier > 0 else 0
+        tier_end = thresholds[current_tier]
+        remaining = tier_end - amount
+    else:
+        # Working on final tier
+        target_tier = current_tier
+        tier_start = thresholds[current_tier - 1] if current_tier > 1 else 0
+        tier_end = thresholds[current_tier - 1]
+        remaining = max_amount - amount
+
+    return (current_tier, target_tier, remaining)
+
+
+def get_tier_weight(rarity: str, current_tier: int, target_tier: int) -> float:
+    """Get weight for a tier progression."""
+    key = f"{rarity.lower()}_{current_tier}_{target_tier}"
+    return TIER_WEIGHTS.get(key, 1.0)
 
 
 def get_remaining_to_max(rarity: str, amount: int) -> int:
@@ -357,21 +468,21 @@ def get_remaining_to_max(rarity: str, amount: int) -> int:
 
 
 def calculate_aspect_score(rarity: str, amount: int) -> float:
-    """Calculate score contribution for a single aspect using new formula."""
+    """Calculate score contribution for a single aspect using tier-based weights."""
     rarity_lower = rarity.lower()
     max_amt = MAX_AMOUNTS.get(rarity, 999)
 
     if amount >= max_amt:
         return 0.0  # Already maxed, no score
 
-    total_remaining = max_amt - amount
-    drop_prob = DROP_PROBS.get(rarity_lower, 0.46)
-    weight = RARITY_WEIGHTS.get(rarity_lower, 1.0)
+    # Get tier info and weight
+    current_tier, target_tier, remaining = get_tier_info(rarity, amount)
 
-    # contribution = (totalRemaining / dropProb * weight) ^ GLOBAL_EXPONENT
-    expected_pulls = total_remaining / drop_prob
-    weighted = expected_pulls * weight
-    return weighted ** GLOBAL_EXPONENT
+    if current_tier == 0:
+        return 0.0  # Maxed
+
+    weight = get_tier_weight(rarity, current_tier, target_tier)
+    return remaining * weight
 
 
 def calculate_pool_score(pool_aspects: list, player_aspects: dict, raid_type: str = None) -> float:
@@ -388,9 +499,7 @@ def calculate_pool_score(pool_aspects: list, player_aspects: dict, raid_type: st
         # Add score contribution
         total_score += calculate_aspect_score(rarity, player_amount)
 
-    # Apply raid multiplier and normalization factor
-    raid_multiplier = RAID_MULTIPLIERS.get(raid_type, 1.0) if raid_type else 1.0
-    return total_score * raid_multiplier * NORMALIZATION_FACTOR
+    return total_score
 
 
 def sort_aspects_by_rarity(aspects: list) -> list:
@@ -530,6 +639,33 @@ async def gambits(interaction: discord.Interaction):
 # =============================================================================
 
 
+class LootPoolTypeView(discord.ui.View):
+    """View with buttons to choose between Raid and Lootrun pools."""
+    def __init__(self, original_user_id: int = None):
+        super().__init__(timeout=300)
+        self.original_user_id = original_user_id
+
+    async def _check_user(self, interaction: discord.Interaction) -> bool:
+        if self.original_user_id and interaction.user.id != self.original_user_id:
+            await interaction.response.send_message("Only the person who used the command can use these buttons.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Raids", style=discord.ButtonStyle.primary, emoji=discord.PartialEmoji(name="notg", id=1466160820638584885))
+    async def raids_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_user(interaction):
+            return
+        await interaction.response.defer()
+        await show_aspects_overview(interaction, edit=True, original_user_id=self.original_user_id)
+
+    @discord.ui.button(label="Lootruns", style=discord.ButtonStyle.primary, emoji=discord.PartialEmoji(name="lootrun", id=1466173956884136188))
+    async def lootruns_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_user(interaction):
+            return
+        await interaction.response.defer()
+        await show_lootrun_overview(interaction, edit=True, original_user_id=self.original_user_id)
+
+
 class RaidButtonsView(discord.ui.View):
     def __init__(self, original_user_id: int = None):
         super().__init__(timeout=300)
@@ -568,6 +704,270 @@ class RaidButtonsView(discord.ui.View):
             return
         await interaction.response.defer()
         await show_raid_pool_edit(interaction, "TNA", original_user_id=self.original_user_id)
+
+
+class LootrunButtonsView(discord.ui.View):
+    """View with buttons for selecting lootruns."""
+    def __init__(self, original_user_id: int = None):
+        super().__init__(timeout=300)
+        self.original_user_id = original_user_id
+
+    async def _check_user(self, interaction: discord.Interaction) -> bool:
+        if self.original_user_id and interaction.user.id != self.original_user_id:
+            await interaction.response.send_message("Only the person who used the command can use these buttons.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Silent Expanse", style=discord.ButtonStyle.primary, custom_id="lootrun_se", emoji=discord.PartialEmoji(name="lootrun", id=1466173956884136188))
+    async def se_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_user(interaction):
+            return
+        await interaction.response.defer()
+        await show_lootrun_pool_edit(interaction, "SE", original_user_id=self.original_user_id)
+
+    @discord.ui.button(label="Sky Islands", style=discord.ButtonStyle.primary, custom_id="lootrun_si", emoji=discord.PartialEmoji(name="lootrun", id=1466173956884136188))
+    async def si_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_user(interaction):
+            return
+        await interaction.response.defer()
+        await show_lootrun_pool_edit(interaction, "SI", original_user_id=self.original_user_id)
+
+    @discord.ui.button(label="Molten Heights", style=discord.ButtonStyle.primary, custom_id="lootrun_mh", emoji=discord.PartialEmoji(name="lootrun", id=1466173956884136188))
+    async def mh_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_user(interaction):
+            return
+        await interaction.response.defer()
+        await show_lootrun_pool_edit(interaction, "MH", original_user_id=self.original_user_id)
+
+    @discord.ui.button(label="Corkus", style=discord.ButtonStyle.primary, custom_id="lootrun_cork", emoji=discord.PartialEmoji(name="lootrun", id=1466173956884136188))
+    async def cork_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_user(interaction):
+            return
+        await interaction.response.defer()
+        await show_lootrun_pool_edit(interaction, "CORK", original_user_id=self.original_user_id)
+
+    @discord.ui.button(label="Canyon", style=discord.ButtonStyle.primary, custom_id="lootrun_cotl", emoji=discord.PartialEmoji(name="lootrun", id=1466173956884136188))
+    async def cotl_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_user(interaction):
+            return
+        await interaction.response.defer()
+        await show_lootrun_pool_edit(interaction, "COTL", original_user_id=self.original_user_id)
+
+
+class BackToLootrunOverviewView(discord.ui.View):
+    """View for lootrun pool detail with back button."""
+    def __init__(self, lootrun_type: str = None, original_user_id: int = None):
+        super().__init__(timeout=300)
+        self.lootrun_type = lootrun_type
+        self.original_user_id = original_user_id
+        self._build_buttons()
+
+    async def _check_user(self, interaction: discord.Interaction) -> bool:
+        if self.original_user_id and interaction.user.id != self.original_user_id:
+            await interaction.response.send_message("Only the person who used the command can use these buttons.", ephemeral=True)
+            return False
+        return True
+
+    def _build_buttons(self):
+        back_btn = discord.ui.Button(label="Back to Overview", style=discord.ButtonStyle.secondary)
+        back_btn.callback = self.back_callback
+        self.add_item(back_btn)
+
+    async def back_callback(self, interaction: discord.Interaction):
+        if not await self._check_user(interaction):
+            return
+        await interaction.response.defer()
+        await show_lootrun_overview_edit(interaction, original_user_id=self.original_user_id)
+
+
+async def show_lootrun_overview(interaction: discord.Interaction, edit: bool = False, original_user_id: int = None):
+    """Show the weekly lootrun pools overview."""
+    last_reset, next_reset = get_weekly_reset_times()
+
+    # Fetch all lootrun pools
+    all_pools = await fetch_all_lootrun_pools()
+
+    embed = discord.Embed(
+        title="<:lootrun:1466173956884136188> Weekly Lootrun Pools",
+        description=f"**Updates at:** <t:{next_reset}:F>",
+        color=0x5C005C
+    )
+
+    if all_pools:
+        for lr_type in LOOTRUN_TYPES:
+            items = all_pools.get(lr_type, [])
+            if items:
+                # Get shinies with their tracker stat
+                shinies = [i for i in items if i.get("type") == "shiny"]
+                shiny_lines = []
+                for shiny in shinies:
+                    shiny_name = shiny.get("name", "Unknown")
+                    shiny_stat = shiny.get("shinyStat", "")
+                    if shiny_stat:
+                        shiny_lines.append(f"✨ {shiny_name} ({shiny_stat})")
+                    else:
+                        shiny_lines.append(f"✨ {shiny_name}")
+
+                # Get all mythics (non-shiny)
+                mythics = [i for i in items if i.get("rarity") == "Mythic" and i.get("type") != "shiny"]
+                mythic_lines = [f"• {m.get('name', 'Unknown')}" for m in mythics]
+
+                field_lines = []
+                if shiny_lines:
+                    field_lines.append("**Shinies:**")
+                    field_lines.extend(shiny_lines)
+                if mythic_lines:
+                    if shiny_lines:
+                        field_lines.append("")  # Empty line separator
+                    field_lines.append("**Mythics:**")
+                    field_lines.extend(mythic_lines)
+
+                if not field_lines:
+                    field_lines.append("*No shinies or mythics*")
+
+                field_name = f"{LOOTRUN_EMOJIS[lr_type]} {LOOTRUN_NAMES[lr_type]}"
+                embed.add_field(name=field_name, value="\n".join(field_lines), inline=False)
+    else:
+        embed.description += "\n\n*No lootrun pools available yet.*"
+
+    if edit:
+        await interaction.edit_original_response(embeds=[embed], view=LootrunButtonsView(original_user_id=original_user_id))
+    else:
+        await interaction.followup.send(embed=embed, view=LootrunButtonsView(original_user_id=original_user_id))
+
+
+async def show_lootrun_overview_edit(interaction: discord.Interaction, original_user_id: int = None):
+    """Show lootrun overview (edit version)."""
+    await show_lootrun_overview(interaction, edit=True, original_user_id=original_user_id)
+
+
+async def show_lootrun_pool_edit(interaction: discord.Interaction, lootrun_type: str, original_user_id: int = None):
+    """Show loot pool for a specific lootrun (edit version)."""
+    data = await fetch_lootrun_pool(lootrun_type)
+
+    if not data or "items" not in data:
+        await interaction.edit_original_response(
+            content=f"No loot pool available for {LOOTRUN_NAMES.get(lootrun_type, lootrun_type)}.",
+            embeds=[],
+            view=BackToLootrunOverviewView(lootrun_type, original_user_id=original_user_id)
+        )
+        return
+
+    items = data.get("items", [])
+
+    # Sort items by rarity
+    rarity_order = {"Mythic": 0, "Fabled": 1, "Legendary": 2, "Rare": 3, "Set": 4, "Unique": 5}
+    items = sorted(items, key=lambda i: rarity_order.get(i.get("rarity", ""), 99))
+
+    title = f"{LOOTRUN_EMOJIS.get(lootrun_type, '<:lootrun:1466173956884136188>')} {LOOTRUN_NAMES.get(lootrun_type, lootrun_type)} Loot Pool"
+
+    embed = discord.Embed(
+        title=title,
+        color=0x8B008B
+    )
+
+    if not items:
+        embed.description = "No items in the loot pool."
+        await interaction.edit_original_response(embeds=[embed], view=BackToLootrunOverviewView(lootrun_type, original_user_id=original_user_id))
+        return
+
+    embeds = [embed]
+
+    # Group items by rarity
+    for rarity in ["Mythic", "Fabled", "Legendary", "Rare", "Set", "Unique"]:
+        rarity_items = [i for i in items if i.get("rarity") == rarity]
+        if not rarity_items:
+            continue
+
+        item_lines = []
+        for item in rarity_items:
+            item_name = item.get("name", "Unknown")
+            item_type = item.get("type", "normal")
+
+            # Add shiny indicator if applicable
+            if item_type == "shiny":
+                shiny_stat = item.get("shinyStat", "")
+                if shiny_stat:
+                    item_lines.append(f"✨ {item_name} ({shiny_stat})")
+                else:
+                    item_lines.append(f"✨ {item_name}")
+            elif item_type == "tome":
+                item_lines.append(f"📖 {item_name}")
+            else:
+                item_lines.append(f"• {item_name}")
+
+        rarity_color = RARITY_COLORS.get(rarity, 0x808080)
+        rarity_embed = discord.Embed(
+            title=f"{rarity} Items",
+            description="\n".join(item_lines),
+            color=rarity_color
+        )
+        embeds.append(rarity_embed)
+
+    await interaction.edit_original_response(embeds=embeds, view=BackToLootrunOverviewView(lootrun_type, original_user_id=original_user_id))
+
+
+async def show_lootrun_pool(interaction: discord.Interaction, lootrun_type: str, followup: bool = True, original_user_id: int = None):
+    """Show loot pool for a specific lootrun."""
+    data = await fetch_lootrun_pool(lootrun_type)
+
+    if not data or "items" not in data:
+        if followup:
+            await interaction.followup.send(f"No loot pool available for {LOOTRUN_NAMES.get(lootrun_type, lootrun_type)}.", ephemeral=True)
+        return
+
+    items = data.get("items", [])
+
+    # Sort items by rarity
+    rarity_order = {"Mythic": 0, "Fabled": 1, "Legendary": 2, "Rare": 3, "Set": 4, "Unique": 5}
+    items = sorted(items, key=lambda i: rarity_order.get(i.get("rarity", ""), 99))
+
+    title = f"{LOOTRUN_EMOJIS.get(lootrun_type, '<:lootrun:1466173956884136188>')} {LOOTRUN_NAMES.get(lootrun_type, lootrun_type)} Loot Pool"
+
+    embed = discord.Embed(
+        title=title,
+        color=0x8B008B
+    )
+
+    if not items:
+        embed.description = "No items in the loot pool."
+        await interaction.followup.send(embed=embed, view=BackToLootrunOverviewView(lootrun_type, original_user_id=original_user_id))
+        return
+
+    embeds = [embed]
+
+    # Group items by rarity
+    for rarity in ["Mythic", "Fabled", "Legendary", "Rare", "Set", "Unique"]:
+        rarity_items = [i for i in items if i.get("rarity") == rarity]
+        if not rarity_items:
+            continue
+
+        item_lines = []
+        for item in rarity_items:
+            item_name = item.get("name", "Unknown")
+            item_type = item.get("type", "normal")
+
+            # Add shiny indicator if applicable
+            if item_type == "shiny":
+                shiny_stat = item.get("shinyStat", "")
+                if shiny_stat:
+                    item_lines.append(f"✨ {item_name} ({shiny_stat})")
+                else:
+                    item_lines.append(f"✨ {item_name}")
+            elif item_type == "tome":
+                item_lines.append(f"📖 {item_name}")
+            else:
+                item_lines.append(f"• {item_name}")
+
+        rarity_color = RARITY_COLORS.get(rarity, 0x808080)
+        rarity_embed = discord.Embed(
+            title=f"{rarity} Items",
+            description="\n".join(item_lines),
+            color=rarity_color
+        )
+        embeds.append(rarity_embed)
+
+    await interaction.followup.send(embeds=embeds, view=BackToLootrunOverviewView(lootrun_type, original_user_id=original_user_id))
 
 
 async def show_aspects_overview(interaction: discord.Interaction, edit: bool = False, original_user_id: int = None):
@@ -984,24 +1384,42 @@ async def show_raid_pool(interaction: discord.Interaction, raid_type: str, follo
         await interaction.followup.send(embeds=embeds, view=BackToOverviewView(raid_type, filter_mode, is_linked, original_user_id=original_user_id))
 
 
-@bot.tree.command(name="lootpool", description="View loot pools for raids")
-@app_commands.describe(pool="Select a raid loot pool")
-@app_commands.choices(pool=[
-    app_commands.Choice(name="Nest of the Grootslangs (NOTG)", value="NOTG"),
-    app_commands.Choice(name="Orphion's Nexus of Light (NOL)", value="NOL"),
-    app_commands.Choice(name="The Canyon Colossus (TCC)", value="TCC"),
-    app_commands.Choice(name="The Nameless Anomaly (TNA)", value="TNA"),
-])
-async def lootpool(interaction: discord.Interaction, pool: app_commands.Choice[str] = None):
-    """View loot pools - works exactly like /raidpool."""
+@bot.tree.command(name="lootpool", description="View loot pools for raids and lootruns")
+async def lootpool(interaction: discord.Interaction):
+    """View loot pools - choose between Raids and Lootruns."""
     await interaction.response.defer()
 
-    # If no pool specified, show the overview (same as /raidpool)
-    if pool is None:
-        await show_aspects_overview(interaction, original_user_id=interaction.user.id)
+    # Show type selection with Raid and Lootrun buttons
+    embed = discord.Embed(
+        title="Loot Pools",
+        description="Choose which loot pools to view:",
+        color=0x8B008B
+    )
+    embed.add_field(name="Raids", value="Weekly aspect pools from NOTG, NOL, TCC, TNA", inline=False)
+    embed.add_field(name="Lootruns", value="Weekly item pools from SE, SI, MH, CORK, COTL", inline=False)
+
+    await interaction.followup.send(embed=embed, view=LootPoolTypeView(original_user_id=interaction.user.id))
+
+
+@bot.tree.command(name="lootrunpool", description="View loot pools for lootruns")
+@app_commands.describe(lootrun="Select a lootrun region")
+@app_commands.choices(lootrun=[
+    app_commands.Choice(name="Silent Expanse (SE)", value="SE"),
+    app_commands.Choice(name="Sky Islands (SI)", value="SI"),
+    app_commands.Choice(name="Molten Heights (MH)", value="MH"),
+    app_commands.Choice(name="Corkus (CORK)", value="CORK"),
+    app_commands.Choice(name="Canyon of the Lost (COTL)", value="COTL"),
+])
+async def lootrunpool(interaction: discord.Interaction, lootrun: app_commands.Choice[str] = None):
+    """View weekly lootrun loot pools."""
+    await interaction.response.defer()
+
+    # If no lootrun specified, show the overview
+    if lootrun is None:
+        await show_lootrun_overview(interaction, original_user_id=interaction.user.id)
         return
 
-    await show_raid_pool(interaction, pool.value, followup=True, original_user_id=interaction.user.id)
+    await show_lootrun_pool(interaction, lootrun.value, followup=True, original_user_id=interaction.user.id)
 
 
 # === Profile Viewer ===
