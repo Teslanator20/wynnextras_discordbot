@@ -78,9 +78,13 @@ RARITY_COLORS = {
 
 
 def strip_color_codes(text: str) -> str:
-    """Remove Minecraft color codes (§X format) from text."""
+    """Remove Minecraft color codes (§X format) and trailing ': 0' from text."""
     import re
-    return re.sub(r'§[0-9a-fklmnor]', '', text)
+    # Remove color codes
+    text = re.sub(r'§[0-9a-fklmnor]', '', text)
+    # Remove trailing ": 0" from tracked stats
+    text = re.sub(r':\s*0$', '', text)
+    return text.strip()
 
 
 def filter_set_items(items: list) -> list:
@@ -1009,6 +1013,15 @@ async def show_aspects_overview(interaction: discord.Interaction, edit: bool = F
     # Fetch all mythic aspects
     mythics = await fetch_all_mythics()
 
+    # Check if user is linked and fetch their aspects
+    linked_player = await get_linked_player(interaction.user.id)
+    player_aspects = {}
+    if linked_player:
+        player_data = await fetch_player_aspects(linked_player)
+        if player_data:
+            for pa in player_data.get("aspects", []):
+                player_aspects[pa.get("name", "")] = pa.get("amount", 0)
+
     # Build main embed
     embed = discord.Embed(
         title="Weekly Loot Pools",
@@ -1021,6 +1034,15 @@ async def show_aspects_overview(interaction: discord.Interaction, edit: bool = F
         # Fetch class mapping to get flame emojis
         class_mapping = await get_aspect_class_mapping()
 
+        # Fetch full loot pools to calculate scores
+        raid_pools = {}
+        if player_aspects:
+            import asyncio
+            results = await asyncio.gather(*[fetch_loot_pool(raid_type) for raid_type in RAID_TYPES])
+            for raid_type, data in zip(RAID_TYPES, results):
+                if data:
+                    raid_pools[raid_type] = data.get("aspects", [])
+
         for raid_type in RAID_TYPES:
             raid_mythics = [m for m in mythics if m.get("raid") == raid_type]
             if raid_mythics:
@@ -1031,7 +1053,15 @@ async def show_aspects_overview(interaction: discord.Interaction, edit: bool = F
                     flame_emoji = get_aspect_emoji(aspect_class)
                     aspect_lines.append(f"{flame_emoji} {aspect_name}")
 
+                # Build field name with score if linked
                 field_name = f"{RAID_EMOJIS[raid_type]} {raid_type}"
+                if player_aspects and raid_type in raid_pools:
+                    pool_score = calculate_pool_score(raid_pools[raid_type], player_aspects)
+                    if pool_score == 0:
+                        field_name += " (MAXED)"
+                    else:
+                        field_name += f" (Score: {pool_score:.1f})"
+
                 embed.add_field(name=field_name, value="\n".join(aspect_lines), inline=False)
 
     # Send or edit message with buttons
@@ -1174,6 +1204,15 @@ async def show_aspects_overview_edit(interaction: discord.Interaction, original_
     last_reset, next_reset = get_weekly_reset_times()
     mythics = await fetch_all_mythics()
 
+    # Check if user is linked and fetch their aspects
+    linked_player = await get_linked_player(interaction.user.id)
+    player_aspects = {}
+    if linked_player:
+        player_data = await fetch_player_aspects(linked_player)
+        if player_data:
+            for pa in player_data.get("aspects", []):
+                player_aspects[pa.get("name", "")] = pa.get("amount", 0)
+
     embed = discord.Embed(
         title="Weekly Loot Pools",
         description=f"**Updates at:** <t:{next_reset}:F>",
@@ -1183,6 +1222,15 @@ async def show_aspects_overview_edit(interaction: discord.Interaction, original_
     if mythics:
         # Fetch class mapping to get flame emojis
         class_mapping = await get_aspect_class_mapping()
+
+        # Fetch full loot pools to calculate scores
+        raid_pools = {}
+        if player_aspects:
+            import asyncio
+            results = await asyncio.gather(*[fetch_loot_pool(raid_type) for raid_type in RAID_TYPES])
+            for raid_type, data in zip(RAID_TYPES, results):
+                if data:
+                    raid_pools[raid_type] = data.get("aspects", [])
 
         for raid_type in RAID_TYPES:
             raid_mythics = [m for m in mythics if m.get("raid") == raid_type]
@@ -1194,7 +1242,15 @@ async def show_aspects_overview_edit(interaction: discord.Interaction, original_
                     flame_emoji = get_aspect_emoji(aspect_class)
                     aspect_lines.append(f"{flame_emoji} {aspect_name}")
 
+                # Build field name with score if linked
                 field_name = f"{RAID_EMOJIS[raid_type]} {raid_type}"
+                if player_aspects and raid_type in raid_pools:
+                    pool_score = calculate_pool_score(raid_pools[raid_type], player_aspects)
+                    if pool_score == 0:
+                        field_name += " (MAXED)"
+                    else:
+                        field_name += f" (Score: {pool_score:.1f})"
+
                 embed.add_field(name=field_name, value="\n".join(aspect_lines), inline=False)
 
     await interaction.edit_original_response(embeds=[embed], view=RaidButtonsView(original_user_id=original_user_id))
@@ -1265,9 +1321,9 @@ async def show_raid_pool_edit(interaction: discord.Interaction, raid_type: str, 
 
             # Check if user has maxed this aspect
             is_maxed = False
+            player_amount = player_aspects.get(aspect_name, 0)
             if aspect_name in player_aspects:
                 max_threshold = ASPECT_MAX_THRESHOLDS.get(aspect_rarity, 150)
-                player_amount = player_aspects[aspect_name]
                 is_maxed = player_amount >= max_threshold
 
             # Apply filter
@@ -1283,7 +1339,21 @@ async def show_raid_pool_edit(interaction: discord.Interaction, raid_type: str, 
                 # Not maxed - class item emoji
                 emoji = CLASS_ITEM_EMOJIS.get(required_class.lower() if required_class else "", "") or get_aspect_emoji(required_class)
 
-            aspect_lines.append(f"{emoji} {aspect_name}")
+            # Build display text with progress for non-maxed filter
+            display_text = f"{emoji} {aspect_name}"
+            if filter_mode == "non_maxed" and player_aspects:
+                current_tier, target_tier, remaining = get_tier_info(aspect_rarity, player_amount)
+                if current_tier > 0:
+                    # Get tier thresholds to show progress
+                    thresholds = TIER_THRESHOLDS.get(aspect_rarity, [1, 15, 75])
+                    if current_tier <= len(thresholds):
+                        tier_start = thresholds[current_tier - 1] if current_tier > 1 else 0
+                        tier_end = thresholds[current_tier] if current_tier < len(thresholds) else thresholds[-1]
+                        progress_in_tier = player_amount - tier_start
+                        tier_size = tier_end - tier_start
+                        display_text += f" ({progress_in_tier}/{tier_size})"
+
+            aspect_lines.append(display_text)
 
         # Only add embed if there are aspects to show
         if aspect_lines:
@@ -1374,9 +1444,9 @@ async def show_raid_pool(interaction: discord.Interaction, raid_type: str, follo
 
             # Check if user has maxed this aspect
             is_maxed = False
+            player_amount = player_aspects.get(aspect_name, 0)
             if aspect_name in player_aspects:
                 max_threshold = ASPECT_MAX_THRESHOLDS.get(aspect_rarity, 150)
-                player_amount = player_aspects[aspect_name]
                 is_maxed = player_amount >= max_threshold
 
             # Apply filter
@@ -1392,7 +1462,21 @@ async def show_raid_pool(interaction: discord.Interaction, raid_type: str, follo
                 # Not maxed - class item emoji
                 emoji = CLASS_ITEM_EMOJIS.get(required_class.lower() if required_class else "", "") or get_aspect_emoji(required_class)
 
-            aspect_lines.append(f"{emoji} {aspect_name}")
+            # Build display text with progress for non-maxed filter
+            display_text = f"{emoji} {aspect_name}"
+            if filter_mode == "non_maxed" and player_aspects:
+                current_tier, target_tier, remaining = get_tier_info(aspect_rarity, player_amount)
+                if current_tier > 0:
+                    # Get tier thresholds to show progress
+                    thresholds = TIER_THRESHOLDS.get(aspect_rarity, [1, 15, 75])
+                    if current_tier <= len(thresholds):
+                        tier_start = thresholds[current_tier - 1] if current_tier > 1 else 0
+                        tier_end = thresholds[current_tier] if current_tier < len(thresholds) else thresholds[-1]
+                        progress_in_tier = player_amount - tier_start
+                        tier_size = tier_end - tier_start
+                        display_text += f" ({progress_in_tier}/{tier_size})"
+
+            aspect_lines.append(display_text)
 
         # Only add embed if there are aspects to show
         if aspect_lines:
