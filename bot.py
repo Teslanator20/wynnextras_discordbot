@@ -71,7 +71,29 @@ RARITY_COLORS = {
     "Mythic": 0x5C005C,     # Dark purple
     "Fabled": 0xFF5555,     # Red
     "Legendary": 0x55FFFF,  # Light blue/cyan
+    "Rare": 0xFF55FF,       # Pink
+    "Set": 0x55FF55,        # Green
+    "Unique": 0xFFFF55,     # Yellow
 }
+
+
+def strip_color_codes(text: str) -> str:
+    """Remove Minecraft color codes (§X format) from text."""
+    import re
+    return re.sub(r'§[0-9a-fklmnor]', '', text)
+
+
+def filter_set_items(items: list) -> list:
+    """Filter out Emerald Blocks and Liquids from Set items."""
+    filtered = []
+    for item in items:
+        name = item.get("name", "").lower()
+        rarity = item.get("rarity", "")
+        # Skip emerald blocks and liquids for Set items
+        if rarity == "Set" and ("emerald" in name or "liquid" in name):
+            continue
+        filtered.append(item)
+    return filtered
 
 # Animated aspect emojis
 ASPECT_EMOJIS = {
@@ -797,12 +819,15 @@ async def show_lootrun_overview(interaction: discord.Interaction, edit: bool = F
         for lr_type in LOOTRUN_TYPES:
             items = all_pools.get(lr_type, [])
             if items:
+                # Filter out emerald blocks and liquids from set items
+                items = filter_set_items(items)
+
                 # Get shinies with their tracker stat
                 shinies = [i for i in items if i.get("type") == "shiny"]
                 shiny_lines = []
                 for shiny in shinies:
                     shiny_name = shiny.get("name", "Unknown")
-                    shiny_stat = shiny.get("shinyStat", "")
+                    shiny_stat = strip_color_codes(shiny.get("shinyStat", ""))
                     if shiny_stat:
                         shiny_lines.append(f"✨ {shiny_name} ({shiny_stat})")
                     else:
@@ -855,6 +880,9 @@ async def show_lootrun_pool_edit(interaction: discord.Interaction, lootrun_type:
 
     items = data.get("items", [])
 
+    # Filter out emerald blocks and liquids from set items
+    items = filter_set_items(items)
+
     # Sort items by rarity
     rarity_order = {"Mythic": 0, "Fabled": 1, "Legendary": 2, "Rare": 3, "Set": 4, "Unique": 5}
     items = sorted(items, key=lambda i: rarity_order.get(i.get("rarity", ""), 99))
@@ -886,7 +914,7 @@ async def show_lootrun_pool_edit(interaction: discord.Interaction, lootrun_type:
 
             # Add shiny indicator if applicable
             if item_type == "shiny":
-                shiny_stat = item.get("shinyStat", "")
+                shiny_stat = strip_color_codes(item.get("shinyStat", ""))
                 if shiny_stat:
                     item_lines.append(f"✨ {item_name} ({shiny_stat})")
                 else:
@@ -917,6 +945,9 @@ async def show_lootrun_pool(interaction: discord.Interaction, lootrun_type: str,
         return
 
     items = data.get("items", [])
+
+    # Filter out emerald blocks and liquids from set items
+    items = filter_set_items(items)
 
     # Sort items by rarity
     rarity_order = {"Mythic": 0, "Fabled": 1, "Legendary": 2, "Rare": 3, "Set": 4, "Unique": 5}
@@ -949,7 +980,7 @@ async def show_lootrun_pool(interaction: discord.Interaction, lootrun_type: str,
 
             # Add shiny indicator if applicable
             if item_type == "shiny":
-                shiny_stat = item.get("shinyStat", "")
+                shiny_stat = strip_color_codes(item.get("shinyStat", ""))
                 if shiny_stat:
                     item_lines.append(f"✨ {item_name} ({shiny_stat})")
                 else:
