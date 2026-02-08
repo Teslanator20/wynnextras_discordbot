@@ -2034,23 +2034,6 @@ async def unlink(interaction: discord.Interaction):
         await interaction.followup.send("You don't have a linked account.", ephemeral=True)
 
 
-@bot.tree.command(name="emojitest", description="Test if animated emojis work")
-async def emojitest(interaction: discord.Interaction):
-    """Debug command to test emoji rendering."""
-    test_msg = f"""
-**Testing animated emojis:**
-Warrior: {ASPECT_EMOJIS['warrior']}
-Mage: {ASPECT_EMOJIS['mage']}
-Archer: {ASPECT_EMOJIS['archer']}
-Assassin: {ASPECT_EMOJIS['assassin']}
-Shaman: {ASPECT_EMOJIS['shaman']}
-
-If you see broken emojis, the bot needs "Use External Emojis" permission.
-Bot must also be in the server where these emojis are hosted.
-"""
-    await interaction.response.send_message(test_msg)
-
-
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
     if not token:
