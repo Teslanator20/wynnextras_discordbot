@@ -2024,7 +2024,7 @@ async def link(interaction: discord.Interaction, player: str = None):
         description=f"Your Discord is now linked to **{player_name}**",
         color=0x00FF00
     )
-    embed.add_field(name="Next Steps", value="`/pv` - View your profile\n`/raidpool` - View loot pools with your personalized score\n`/lootpool` - View all loot pools", inline=False)
+    embed.add_field(name="Next Steps", value="`/pv` - View your profile\n`/lootpool` - View all loot pools\n`/raidpool` - View raid loot pools with your score\n`/lootrunpool` - View lootrun loot pools", inline=False)
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
