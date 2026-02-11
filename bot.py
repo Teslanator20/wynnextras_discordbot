@@ -2012,11 +2012,9 @@ async def link(interaction: discord.Interaction, player: str = None):
 
     await interaction.response.defer(ephemeral=True)
     data = await fetch_player_aspects(player)
-    if not data:
-        await interaction.followup.send(f"Player **{player}** not found. Make sure you've uploaded aspects from the mod.", ephemeral=True)
-        return
 
-    player_name = data.get("playerName", player)
+    # Use the player name from data if available, otherwise use what they typed
+    player_name = data.get("playerName", player) if data else player
     await set_linked_player(discord_id, player_name)
 
     embed = discord.Embed(
@@ -2024,7 +2022,12 @@ async def link(interaction: discord.Interaction, player: str = None):
         description=f"Your Discord is now linked to **{player_name}**",
         color=0x00FF00
     )
-    embed.add_field(name="Next Steps", value="`/pv` - View your profile\n`/lootpool` - View all loot pools\n`/raidpool` - View raid loot pools with your score\n`/lootrunpool` - View lootrun loot pools", inline=False)
+
+    if data:
+        embed.add_field(name="Next Steps", value="`/pv` - View your profile\n`/lootpool` - View all loot pools\n`/raidpool` - View raid loot pools with your score\n`/lootrunpool` - View lootrun loot pools", inline=False)
+    else:
+        embed.add_field(name="Next Steps", value="`/pv` - View your profile\n`/lootpool` - View all loot pools\n\n*Upload aspects from the mod to see your personalized scores!*", inline=False)
+
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
