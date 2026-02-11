@@ -1063,6 +1063,8 @@ async def show_aspects_overview(interaction: discord.Interaction, edit: bool = F
                         field_name += f" (Score: {pool_score:.1f})"
 
                 embed.add_field(name=field_name, value="\n".join(aspect_lines), inline=False)
+    else:
+        embed.description += "\n\n*No loot pool data available yet.*"
 
     # Send or edit message with buttons
     if edit:
@@ -1252,6 +1254,8 @@ async def show_aspects_overview_edit(interaction: discord.Interaction, original_
                         field_name += f" (Score: {pool_score:.1f})"
 
                 embed.add_field(name=field_name, value="\n".join(aspect_lines), inline=False)
+    else:
+        embed.description += "\n\n*No loot pool data available yet.*"
 
     await interaction.edit_original_response(embeds=[embed], view=RaidButtonsView(original_user_id=original_user_id))
 
@@ -1627,7 +1631,7 @@ def build_general_embed(data: dict) -> discord.Embed:
         char_lines = []
         # Sort by level descending
         sorted_chars = sorted(characters.items(), key=lambda x: x[1].get("level", 0), reverse=True)
-        for char_uuid, char_data in sorted_chars[:10]:  # Max 10 characters
+        for char_uuid, char_data in sorted_chars[:15]:  # Max 15 characters
             char_type = char_data.get("type", "UNKNOWN")
             level = char_data.get("level", 0)
             total_level = char_data.get("totalLevel", 0)
