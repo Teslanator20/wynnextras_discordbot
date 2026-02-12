@@ -1642,10 +1642,17 @@ def build_general_embed(data: dict) -> discord.Embed:
 
     return embed
 
+def possessive_username(username: str) -> str:
+    if username.endswith("s"):
+        return f"{username}'"
+    else:
+        return f"{username}'s"
+
 
 def build_raids_embed(data: dict) -> discord.Embed:
     """Build the Raids tab embed."""
-    embed = discord.Embed(title="⚔️ Raids", color=0xFF5555)
+    username = data.get("username", "Unknown")
+    embed = discord.Embed(title=f"⚔️ {possessive_username(username)} Raids", color=0xFF5555)
 
     global_data = data.get("globalData", {})
     raids = global_data.get("raids", {})
@@ -1673,7 +1680,7 @@ def build_raids_embed(data: dict) -> discord.Embed:
 
 def build_rankings_embed(data: dict) -> discord.Embed:
     """Build the Rankings tab embed."""
-    embed = discord.Embed(title="🥇 Rankings", color=0xFFD700)
+    embed = discord.Embed(title=f"🥇 {possessive_username(username)} Rankings", color=0xFFD700)
 
     ranking = data.get("ranking", {})
 
@@ -1760,7 +1767,7 @@ def build_rankings_embed(data: dict) -> discord.Embed:
 
 def build_profs_embed(data: dict) -> discord.Embed:
     """Build the Professions tab embed showing highest level character's profs."""
-    embed = discord.Embed(title="<:prof:1466127084291100981> Professions", color=0x55FF55)
+    embed = discord.Embed(title=f"<:prof:1466127084291100981> {possessive_username(username)} Professions", color=0x55FF55)
 
     characters = data.get("characters", {})
 
@@ -1785,7 +1792,7 @@ def build_profs_embed(data: dict) -> discord.Embed:
     char_level = best_char.get("level", 0)
     emoji = CLASS_EMOJIS_PV.get(char_type, "❓")
 
-    embed.description = f"**{emoji} {char_type.title()}** - Combat Lv.{char_level} (Total: {best_level})\n"
+    embed.description = f"Best character: **{emoji} {char_type.title()}** - Combat Lv.{char_level} (Total: {best_level})\n"
 
     profs = best_char.get("professions", {})
 
@@ -1832,7 +1839,7 @@ ASPECT_MAX_THRESHOLDS = {
 async def build_aspects_embed(player_data: dict, aspects_data: dict) -> discord.Embed:
     """Build the Aspects tab embed showing maxed aspects per class."""
     username = player_data.get("username", "Unknown")
-    embed = discord.Embed(title=f"{ASPECT_EMOJIS['assassin']} {username}'s Aspects", color=0x8B008B)
+    embed = discord.Embed(title=f"{ASPECT_EMOJIS['assassin']} {possessive_username(username)} Aspects", color=0x8B008B)
 
     if not aspects_data or "aspects" not in aspects_data:
         embed.description = "No aspects data available.\nThis player hasn't uploaded aspects from the WynnExtras mod."
@@ -1895,7 +1902,7 @@ async def build_aspects_embed(player_data: dict, aspects_data: dict) -> discord.
 
 def build_dungeons_embed(data: dict) -> discord.Embed:
     """Build the Dungeons tab embed."""
-    embed = discord.Embed(title="<:dungeon_key:1466127009968296028> Dungeons", color=0x00AAAA)
+    embed = discord.Embed(title=f"<:dungeon_key:1466127009968296028> {possessive_username(username)} Dungeons", color=0x00AAAA)
 
     global_data = data.get("globalData", {})
     dungeons = global_data.get("dungeons", {})
@@ -1935,7 +1942,7 @@ def build_dungeons_embed(data: dict) -> discord.Embed:
 
 def build_misc_embed(data: dict) -> discord.Embed:
     """Build the Misc tab embed."""
-    embed = discord.Embed(title="📊 Misc Stats", color=0xAAAAAA)
+    embed = discord.Embed(title=f"📊 {possessive_username(username)} Misc Stats", color=0xAAAAAA)
 
     global_data = data.get("globalData", {})
 
