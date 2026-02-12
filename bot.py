@@ -1555,10 +1555,16 @@ class ProfileView(discord.ui.View):
         self._build_buttons()
 
     def _build_buttons(self):
+        buttons = []
         for tab in self.TABS:
             if tab == self.current_tab:
                 continue  # Hide current tab button
-            button = discord.ui.Button(label=tab, style=discord.ButtonStyle.primary)
+            buttons.append(tab)
+
+        # Distribute buttons evenly across rows (max 5 per row)
+        for i, tab in enumerate(buttons):
+            row = 0 if i < (len(buttons) + 1) // 2 else 1  # Split evenly
+            button = discord.ui.Button(label=tab, style=discord.ButtonStyle.primary, row=row)
             button.callback = self._make_callback(tab)
             self.add_item(button)
 
