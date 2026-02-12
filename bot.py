@@ -1680,6 +1680,7 @@ def build_raids_embed(data: dict) -> discord.Embed:
 
 def build_rankings_embed(data: dict) -> discord.Embed:
     """Build the Rankings tab embed."""
+    username = data.get("username", "Unknown")
     embed = discord.Embed(title=f"🥇 {possessive_username(username)} Rankings", color=0xFFD700)
 
     ranking = data.get("ranking", {})
@@ -1767,6 +1768,7 @@ def build_rankings_embed(data: dict) -> discord.Embed:
 
 def build_profs_embed(data: dict) -> discord.Embed:
     """Build the Professions tab embed showing highest level character's profs."""
+    username = data.get("username", "Unknown")
     embed = discord.Embed(title=f"<:prof:1466127084291100981> {possessive_username(username)} Professions", color=0x55FF55)
 
     characters = data.get("characters", {})
@@ -1902,6 +1904,7 @@ async def build_aspects_embed(player_data: dict, aspects_data: dict) -> discord.
 
 def build_dungeons_embed(data: dict) -> discord.Embed:
     """Build the Dungeons tab embed."""
+    username = data.get("username", "Unknown")
     embed = discord.Embed(title=f"<:dungeon_key:1466127009968296028> {possessive_username(username)} Dungeons", color=0x00AAAA)
 
     global_data = data.get("globalData", {})
@@ -1942,6 +1945,7 @@ def build_dungeons_embed(data: dict) -> discord.Embed:
 
 def build_misc_embed(data: dict) -> discord.Embed:
     """Build the Misc tab embed."""
+    username = data.get("username", "Unknown")
     embed = discord.Embed(title=f"📊 {possessive_username(username)} Misc Stats", color=0xAAAAAA)
 
     global_data = data.get("globalData", {})
