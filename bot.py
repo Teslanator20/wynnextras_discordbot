@@ -1,6 +1,6 @@
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 import aiohttp
 import asyncpg
 import os
@@ -173,6 +173,14 @@ async def init_db():
                         player_name TEXT NOT NULL
                     )
                 ''')
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS user_reminders (
+                        discord_id BIGINT PRIMARY KEY,
+                        gambit BOOLEAN DEFAULT FALSE,
+                        raidpool BOOLEAN DEFAULT FALSE,
+                        lootrunpool BOOLEAN DEFAULT FALSE
+                    )
+                ''')
             logger.info("Database connected and initialized!")
         except Exception as e:
             logger.error(f"ERROR connecting to database: {e}")
@@ -212,6 +220,52 @@ async def remove_linked_player(discord_id: int) -> str | None:
             discord_id
         )
         return row['player_name'] if row else None
+
+
+# === User Reminders ===
+async def get_user_reminders(discord_id: int) -> dict | None:
+    """Get reminder settings for a user."""
+    if not db_pool:
+        return None
+    async with db_pool.acquire() as conn:
+        row = await conn.fetchrow(
+            'SELECT gambit, raidpool, lootrunpool FROM user_reminders WHERE discord_id = $1',
+            discord_id
+        )
+        if row:
+            return {"gambit": row['gambit'], "raidpool": row['raidpool'], "lootrunpool": row['lootrunpool']}
+        return None
+
+
+async def set_user_reminders(discord_id: int, gambit: bool | None = None, raidpool: bool | None = None, lootrunpool: bool | None = None):
+    """Set reminder preferences for a user."""
+    if not db_pool:
+        return
+    async with db_pool.acquire() as conn:
+        # Get current settings or defaults
+        current = await get_user_reminders(discord_id) or {"gambit": False, "raidpool": False, "lootrunpool": False}
+
+        # Update only specified fields
+        new_gambit = gambit if gambit is not None else current["gambit"]
+        new_raidpool = raidpool if raidpool is not None else current["raidpool"]
+        new_lootrunpool = lootrunpool if lootrunpool is not None else current["lootrunpool"]
+
+        await conn.execute('''
+            INSERT INTO user_reminders (discord_id, gambit, raidpool, lootrunpool)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (discord_id) DO UPDATE SET gambit = $2, raidpool = $3, lootrunpool = $4
+        ''', discord_id, new_gambit, new_raidpool, new_lootrunpool)
+
+
+async def get_users_with_reminder(reminder_type: str) -> list[int]:
+    """Get all discord IDs with a specific reminder enabled."""
+    if not db_pool:
+        return []
+    async with db_pool.acquire() as conn:
+        rows = await conn.fetch(
+            f'SELECT discord_id FROM user_reminders WHERE {reminder_type} = TRUE'
+        )
+        return [row['discord_id'] for row in rows]
 
 
 # === API Functions ===
@@ -597,6 +651,197 @@ async def on_ready():
     except Exception as e:
         logger.error(f"Failed to sync: {e}")
 
+    # Start background reminder tasks
+    if not reminder_check.is_running():
+        reminder_check.start()
+    if not gambit_reminder_check.is_running():
+        gambit_reminder_check.start()
+
+
+# Track if we've already sent reminders for this reset cycle
+_last_reminder_reset: int = 0
+
+
+async def build_lootrun_reminder_embed() -> discord.Embed:
+    """Build an embed with current lootrun pools for reminders."""
+    _, next_reset = get_weekly_reset_times()
+    all_pools = await fetch_all_lootrun_pools()
+
+    embed = discord.Embed(
+        title="Lootrun Pools - Resetting Soon!",
+        description=f"**Refreshes in:** <t:{next_reset}:R>",
+        color=0x5C005C
+    )
+
+    if all_pools:
+        for lr_type in LOOTRUN_TYPES:
+            items = all_pools.get(lr_type, [])
+            if items:
+                items = filter_set_items(items)
+                shinies = [i for i in items if i.get("type") == "shiny"]
+                shiny_lines = []
+                for shiny in shinies:
+                    shiny_name = shiny.get("name", "Unknown")
+                    shiny_stat = strip_color_codes(shiny.get("shinyStat", ""))
+                    if shiny_stat:
+                        shiny_lines.append(f"✨ {shiny_name} ({shiny_stat})")
+                    else:
+                        shiny_lines.append(f"✨ {shiny_name}")
+
+                mythics = [i for i in items if i.get("rarity") == "Mythic" and i.get("type") != "shiny"]
+                mythic_lines = [f"• {m.get('name', 'Unknown')}" for m in mythics]
+
+                field_lines = []
+                if shiny_lines:
+                    field_lines.append("**Shinies:**")
+                    field_lines.extend(shiny_lines)
+                if mythic_lines:
+                    if shiny_lines:
+                        field_lines.append("")
+                    field_lines.append("**Mythics:**")
+                    field_lines.extend(mythic_lines)
+
+                if not field_lines:
+                    field_lines.append("*No shinies or mythics*")
+
+                field_name = f"{LOOTRUN_EMOJIS[lr_type]} {LOOTRUN_NAMES[lr_type]}"
+                embed.add_field(name=field_name, value="\n".join(field_lines), inline=False)
+
+    return embed
+
+
+async def build_raidpool_reminder_embed() -> discord.Embed:
+    """Build an embed with current raid pools for reminders."""
+    _, next_reset = get_weekly_reset_times()
+    mythics = await fetch_all_mythics()
+
+    embed = discord.Embed(
+        title="Raid Pools - Resetting Soon!",
+        description=f"**Refreshes in:** <t:{next_reset}:R>",
+        color=0x5C005C
+    )
+
+    if mythics:
+        class_mapping = await get_aspect_class_mapping()
+        for raid_type in RAID_TYPES:
+            raid_mythics = [m for m in mythics if m.get("raid") == raid_type]
+            if raid_mythics:
+                aspect_lines = []
+                for m in raid_mythics:
+                    aspect_name = m['name']
+                    aspect_class = get_aspect_class(aspect_name, class_mapping)
+                    flame_emoji = get_aspect_emoji(aspect_class)
+                    aspect_lines.append(f"{flame_emoji} {aspect_name}")
+
+                field_name = f"{RAID_EMOJIS[raid_type]} {raid_type}"
+                embed.add_field(name=field_name, value="\n".join(aspect_lines), inline=False)
+
+    return embed
+
+
+async def build_gambits_reminder_embed() -> discord.Embed:
+    """Build an embed with today's gambits for reminders."""
+    data = await fetch_gambits()
+
+    embed = discord.Embed(title="Today's Gambits", color=0xFFD700)
+
+    if data:
+        for gambit in data.get("gambits", []):
+            embed.add_field(name=gambit["name"], value=gambit["description"], inline=False)
+    else:
+        embed.description = "*No gambits available.*"
+
+    return embed
+
+
+@tasks.loop(minutes=30)
+async def reminder_check():
+    """Check if it's time to send weekly reset reminders (1 hour before Friday 19:00 CET)."""
+    global _last_reminder_reset
+    import time
+
+    cet = timezone(timedelta(hours=1))
+    now = datetime.now(cet)
+
+    # Get next reset time
+    _, next_reset = get_weekly_reset_times()
+
+    # Check if we're within 1 hour of reset and haven't sent reminders for this cycle
+    current_time = int(time.time())
+    time_until_reset = next_reset - current_time
+
+    # Send reminders if within 1 hour (3600 seconds) but not yet sent for this reset
+    if 0 < time_until_reset <= 3600 and _last_reminder_reset != next_reset:
+        _last_reminder_reset = next_reset
+        logger.info("Sending weekly reset reminders...")
+
+        # Get users with raidpool or lootrunpool reminders
+        raidpool_users = await get_users_with_reminder("raidpool")
+        lootrunpool_users = await get_users_with_reminder("lootrunpool")
+
+        # Pre-build embeds once (shared across all users)
+        raidpool_embed = None
+        lootrunpool_embed = None
+
+        if raidpool_users:
+            raidpool_embed = await build_raidpool_reminder_embed()
+        if lootrunpool_users:
+            lootrunpool_embed = await build_lootrun_reminder_embed()
+
+        # Combine unique users
+        all_users = set(raidpool_users + lootrunpool_users)
+
+        for discord_id in all_users:
+            try:
+                user = await bot.fetch_user(discord_id)
+                if user:
+                    reminders = await get_user_reminders(discord_id)
+                    if reminders:
+                        embeds_to_send = []
+                        if reminders.get("raidpool") and raidpool_embed:
+                            embeds_to_send.append(raidpool_embed)
+                        if reminders.get("lootrunpool") and lootrunpool_embed:
+                            embeds_to_send.append(lootrunpool_embed)
+
+                        if embeds_to_send:
+                            await user.send(embeds=embeds_to_send)
+                            logger.info(f"Sent reminder to user {discord_id}")
+            except Exception as e:
+                logger.error(f"Failed to send reminder to {discord_id}: {e}")
+
+
+@tasks.loop(hours=1)
+async def gambit_reminder_check():
+    """Check if it's time to send daily gambit reminders (at 00:00 UTC / reset)."""
+    now = datetime.now(timezone.utc)
+
+    # Check if it's within the first hour of a new day (00:00 - 01:00 UTC)
+    if now.hour == 0:
+        gambit_users = await get_users_with_reminder("gambit")
+
+        if gambit_users:
+            # Build embed once for all users
+            gambit_embed = await build_gambits_reminder_embed()
+
+            for discord_id in gambit_users:
+                try:
+                    user = await bot.fetch_user(discord_id)
+                    if user:
+                        await user.send(embed=gambit_embed)
+                        logger.info(f"Sent gambit reminder to user {discord_id}")
+                except Exception as e:
+                    logger.error(f"Failed to send gambit reminder to {discord_id}: {e}")
+
+
+@reminder_check.before_loop
+async def before_reminder_check():
+    await bot.wait_until_ready()
+
+
+@gambit_reminder_check.before_loop
+async def before_gambit_reminder_check():
+    await bot.wait_until_ready()
+
 
 # === Commands ===
 @bot.tree.command(name="gambits", description="Get today's gambits")
@@ -611,6 +856,144 @@ async def gambits(interaction: discord.Interaction):
     for gambit in data.get("gambits", []):
         embed.add_field(name=gambit["name"], value=gambit["description"], inline=False)
     await interaction.followup.send(embed=embed)
+
+
+class ReminderSettingsView(discord.ui.View):
+    """View with toggle buttons for reminder settings."""
+    def __init__(self, user_id: int, gambit: bool = False, raidpool: bool = False, lootrunpool: bool = False):
+        super().__init__(timeout=300)
+        self.user_id = user_id
+        self.gambit = gambit
+        self.raidpool = raidpool
+        self.lootrunpool = lootrunpool
+        self._update_buttons()
+
+    def _update_buttons(self):
+        """Update button styles based on current settings."""
+        self.gambit_btn.style = discord.ButtonStyle.green if self.gambit else discord.ButtonStyle.red
+        self.gambit_btn.label = f"Gambit: {'ON' if self.gambit else 'OFF'}"
+
+        self.raidpool_btn.style = discord.ButtonStyle.green if self.raidpool else discord.ButtonStyle.red
+        self.raidpool_btn.label = f"Raid Pool: {'ON' if self.raidpool else 'OFF'}"
+
+        self.lootrunpool_btn.style = discord.ButtonStyle.green if self.lootrunpool else discord.ButtonStyle.red
+        self.lootrunpool_btn.label = f"Lootrun Pool: {'ON' if self.lootrunpool else 'OFF'}"
+
+    def _get_embed(self) -> discord.Embed:
+        """Generate the embed showing current settings."""
+        embed = discord.Embed(
+            title="Reminder Settings",
+            description="Click the buttons below to toggle reminders on/off.",
+            color=0x5C005C
+        )
+        embed.add_field(
+            name="Gambit",
+            value=f"{'Enabled - Daily at reset' if self.gambit else 'Disabled'}",
+            inline=True
+        )
+        embed.add_field(
+            name="Raid Pool",
+            value=f"{'Enabled - 1hr before Friday reset' if self.raidpool else 'Disabled'}",
+            inline=True
+        )
+        embed.add_field(
+            name="Lootrun Pool",
+            value=f"{'Enabled - 1hr before Friday reset' if self.lootrunpool else 'Disabled'}",
+            inline=True
+        )
+        return embed
+
+    @discord.ui.button(label="Gambit: OFF", style=discord.ButtonStyle.red)
+    async def gambit_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("You can't use these buttons.", ephemeral=True)
+            return
+        self.gambit = not self.gambit
+        await set_user_reminders(self.user_id, gambit=self.gambit)
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self._get_embed(), view=self)
+
+    @discord.ui.button(label="Raid Pool: OFF", style=discord.ButtonStyle.red)
+    async def raidpool_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("You can't use these buttons.", ephemeral=True)
+            return
+        self.raidpool = not self.raidpool
+        await set_user_reminders(self.user_id, raidpool=self.raidpool)
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self._get_embed(), view=self)
+
+    @discord.ui.button(label="Lootrun Pool: OFF", style=discord.ButtonStyle.red)
+    async def lootrunpool_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("You can't use these buttons.", ephemeral=True)
+            return
+        self.lootrunpool = not self.lootrunpool
+        await set_user_reminders(self.user_id, lootrunpool=self.lootrunpool)
+        self._update_buttons()
+        await interaction.response.edit_message(embed=self._get_embed(), view=self)
+
+
+@bot.tree.command(name="remindme", description="Set up reminders for gambits, raid pools, or lootrun pools")
+@app_commands.describe(
+    gambit="Get daily gambit reminders (at reset)",
+    raidpool="Get weekly raid pool reminders (1 hour before Friday reset)",
+    lootrunpool="Get weekly lootrun pool reminders (1 hour before Friday reset)"
+)
+async def remindme(
+    interaction: discord.Interaction,
+    gambit: bool = None,
+    raidpool: bool = None,
+    lootrunpool: bool = None
+):
+    await interaction.response.defer(ephemeral=True)
+
+    # Check if database is available
+    if not db_pool:
+        await interaction.followup.send("Reminders are not available (database not configured).", ephemeral=True)
+        return
+
+    # If no options specified, show interactive button view
+    if gambit is None and raidpool is None and lootrunpool is None:
+        current = await get_user_reminders(interaction.user.id) or {"gambit": False, "raidpool": False, "lootrunpool": False}
+        view = ReminderSettingsView(
+            user_id=interaction.user.id,
+            gambit=current["gambit"],
+            raidpool=current["raidpool"],
+            lootrunpool=current["lootrunpool"]
+        )
+        await interaction.followup.send(embed=view._get_embed(), view=view, ephemeral=True)
+        return
+
+    # Update the settings
+    await set_user_reminders(interaction.user.id, gambit=gambit, raidpool=raidpool, lootrunpool=lootrunpool)
+
+    # Get updated settings to show
+    updated = await get_user_reminders(interaction.user.id)
+
+    lines = []
+    if gambit is not None:
+        lines.append(f"**Gambit:** {'Enabled' if gambit else 'Disabled'}")
+    if raidpool is not None:
+        lines.append(f"**Raid Pool:** {'Enabled' if raidpool else 'Disabled'}")
+    if lootrunpool is not None:
+        lines.append(f"**Lootrun Pool:** {'Enabled' if lootrunpool else 'Disabled'}")
+
+    embed = discord.Embed(
+        title="Reminder Settings Updated",
+        description="\n".join(lines),
+        color=0x00FF00
+    )
+
+    # Show all current settings
+    if updated:
+        current_lines = []
+        current_lines.append(f"Gambit: {'Enabled' if updated['gambit'] else 'Disabled'}")
+        current_lines.append(f"Raid Pool: {'Enabled' if updated['raidpool'] else 'Disabled'}")
+        current_lines.append(f"Lootrun Pool: {'Enabled' if updated['lootrunpool'] else 'Disabled'}")
+        embed.add_field(name="Current Settings", value="\n".join(current_lines), inline=False)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 # =============================================================================
@@ -815,7 +1198,7 @@ async def show_lootrun_overview(interaction: discord.Interaction, edit: bool = F
 
     embed = discord.Embed(
         title="<:lootrun:1466173956884136188> Weekly Lootrun Pools",
-        description=f"**Updates at:** <t:{next_reset}:F>",
+        description=f"**Refreshes in:** <t:{next_reset}:R>",
         color=0x5C005C
     )
 
@@ -1025,7 +1408,7 @@ async def show_aspects_overview(interaction: discord.Interaction, edit: bool = F
     # Build main embed
     embed = discord.Embed(
         title="Weekly Loot Pools",
-        description=f"**Updates at:** <t:{next_reset}:F>",
+        description=f"**Refreshes in:** <t:{next_reset}:R>",
         color=0x5C005C  # Mythic purple
     )
 
@@ -1217,7 +1600,7 @@ async def show_aspects_overview_edit(interaction: discord.Interaction, original_
 
     embed = discord.Embed(
         title="Weekly Loot Pools",
-        description=f"**Updates at:** <t:{next_reset}:F>",
+        description=f"**Refreshes in:** <t:{next_reset}:R>",
         color=0x5C005C
     )
 
