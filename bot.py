@@ -812,11 +812,12 @@ async def reminder_check():
 
 @tasks.loop(hours=1)
 async def gambit_reminder_check():
-    """Check if it's time to send daily gambit reminders (at 00:00 UTC / reset)."""
-    now = datetime.now(timezone.utc)
+    """Check if it's time to send daily gambit reminders (at 19:00 CET)."""
+    cet = timezone(timedelta(hours=1))
+    now = datetime.now(cet)
 
-    # Check if it's within the first hour of a new day (00:00 - 01:00 UTC)
-    if now.hour == 0:
+    # Check if it's 19:00 CET (7 PM)
+    if now.hour == 19:
         gambit_users = await get_users_with_reminder("gambit")
 
         if gambit_users:
