@@ -654,8 +654,8 @@ async def on_ready():
     # Start background reminder tasks
     if not reminder_check.is_running():
         reminder_check.start()
-    if not gambit_reminder_check.is_running():
-        gambit_reminder_check.start()
+    if not gambit_reminder_trigger.is_running():
+        gambit_reminder_trigger.start()
 
 
 # Track if we've already sent reminders for this reset cycle
@@ -810,23 +810,67 @@ async def reminder_check():
                 logger.error(f"Failed to send reminder to {discord_id}: {e}")
 
 
+_last_known_gambits: set[str] = set()
+_gambit_reminder_sent_today: bool = False
+
+
 @tasks.loop(time=dt_time(hour=19, minute=0, second=0, tzinfo=timezone(timedelta(hours=1))))
-async def gambit_reminder_check():
-    """Send daily gambit reminders at exactly 19:00 CET."""
-    gambit_users = await get_users_with_reminder("gambit")
+async def gambit_reminder_trigger():
+    """Trigger gambit polling at 19:00 CET."""
+    global _gambit_reminder_sent_today
+    _gambit_reminder_sent_today = False
+    logger.info("Starting gambit polling for new gambits...")
+    # Start the polling loop
+    if not gambit_poll_loop.is_running():
+        gambit_poll_loop.start()
 
-    if gambit_users:
-        # Build embed once for all users
-        gambit_embed = await build_gambits_reminder_embed()
 
-        for discord_id in gambit_users:
-            try:
-                user = await bot.fetch_user(discord_id)
-                if user:
-                    await user.send(embed=gambit_embed)
-                    logger.info(f"Sent gambit reminder to user {discord_id}")
-            except Exception as e:
-                logger.error(f"Failed to send gambit reminder to {discord_id}: {e}")
+@tasks.loop(seconds=30)
+async def gambit_poll_loop():
+    """Poll for new gambits every 30 seconds after 19:00 CET."""
+    global _last_known_gambits, _gambit_reminder_sent_today
+    import asyncio
+
+    # Stop if we already sent today
+    if _gambit_reminder_sent_today:
+        gambit_poll_loop.stop()
+        return
+
+    # Timeout after 30 minutes of polling
+    cet = timezone(timedelta(hours=1))
+    now = datetime.now(cet)
+    if now.hour >= 20 or (now.hour == 19 and now.minute >= 30):
+        logger.info("Gambit polling timeout - stopping")
+        gambit_poll_loop.stop()
+        return
+
+    # Fetch current gambits
+    data = await fetch_gambits()
+    if not data or not data.get("gambits"):
+        return
+
+    current_gambits = {g["name"] for g in data.get("gambits", [])}
+
+    # Check if these are new gambits (different from last known)
+    if current_gambits and current_gambits != _last_known_gambits:
+        logger.info(f"New gambits detected: {current_gambits}")
+        _last_known_gambits = current_gambits
+        _gambit_reminder_sent_today = True
+
+        # Send reminders
+        gambit_users = await get_users_with_reminder("gambit")
+        if gambit_users:
+            gambit_embed = await build_gambits_reminder_embed()
+            for discord_id in gambit_users:
+                try:
+                    user = await bot.fetch_user(discord_id)
+                    if user:
+                        await user.send(embed=gambit_embed)
+                        logger.info(f"Sent gambit reminder to user {discord_id}")
+                except Exception as e:
+                    logger.error(f"Failed to send gambit reminder to {discord_id}: {e}")
+
+        gambit_poll_loop.stop()
 
 
 @reminder_check.before_loop
@@ -834,8 +878,13 @@ async def before_reminder_check():
     await bot.wait_until_ready()
 
 
-@gambit_reminder_check.before_loop
-async def before_gambit_reminder_check():
+@gambit_reminder_trigger.before_loop
+async def before_gambit_reminder_trigger():
+    await bot.wait_until_ready()
+
+
+@gambit_poll_loop.before_loop
+async def before_gambit_poll_loop():
     await bot.wait_until_ready()
 
 
