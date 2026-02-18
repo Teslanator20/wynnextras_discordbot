@@ -6,7 +6,7 @@ import asyncpg
 import os
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, time as dt_time
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -810,28 +810,23 @@ async def reminder_check():
                 logger.error(f"Failed to send reminder to {discord_id}: {e}")
 
 
-@tasks.loop(hours=1)
+@tasks.loop(time=dt_time(hour=19, minute=0, second=0, tzinfo=timezone(timedelta(hours=1))))
 async def gambit_reminder_check():
-    """Check if it's time to send daily gambit reminders (at 19:00 CET)."""
-    cet = timezone(timedelta(hours=1))
-    now = datetime.now(cet)
+    """Send daily gambit reminders at exactly 19:00 CET."""
+    gambit_users = await get_users_with_reminder("gambit")
 
-    # Check if it's 19:00 CET (7 PM)
-    if now.hour == 19:
-        gambit_users = await get_users_with_reminder("gambit")
+    if gambit_users:
+        # Build embed once for all users
+        gambit_embed = await build_gambits_reminder_embed()
 
-        if gambit_users:
-            # Build embed once for all users
-            gambit_embed = await build_gambits_reminder_embed()
-
-            for discord_id in gambit_users:
-                try:
-                    user = await bot.fetch_user(discord_id)
-                    if user:
-                        await user.send(embed=gambit_embed)
-                        logger.info(f"Sent gambit reminder to user {discord_id}")
-                except Exception as e:
-                    logger.error(f"Failed to send gambit reminder to {discord_id}: {e}")
+        for discord_id in gambit_users:
+            try:
+                user = await bot.fetch_user(discord_id)
+                if user:
+                    await user.send(embed=gambit_embed)
+                    logger.info(f"Sent gambit reminder to user {discord_id}")
+            except Exception as e:
+                logger.error(f"Failed to send gambit reminder to {discord_id}: {e}")
 
 
 @reminder_check.before_loop
