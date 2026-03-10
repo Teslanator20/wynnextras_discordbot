@@ -568,19 +568,16 @@ def calculate_aspect_score(rarity: str, amount: int) -> float:
 
 
 def calculate_pool_score(pool_aspects: list, player_aspects: dict, raid_type: str = None) -> float:
-    """Calculate total score for a loot pool based on player progress."""
     total_score = 0.0
-
     for aspect in pool_aspects:
         name = aspect.get("name", "")
         rarity = aspect.get("rarity", "")
-
-        # Get player's current amount for this aspect
         player_amount = player_aspects.get(name, 0)
-
-        # Add score contribution
-        total_score += calculate_aspect_score(rarity, player_amount)
-
+        score = calculate_aspect_score(rarity, player_amount)
+        if score > 0:
+            print(f"[SCORE] '{name}' ({rarity}) amount={player_amount} → {score}")
+    total_score += score
+    print(f"[SCORE] TOTAL={total_score}")
     return total_score
 
 
