@@ -501,38 +501,40 @@ TIER_WEIGHTS = {
 
 
 def get_tier_info(rarity: str, amount: int) -> tuple[int, int, int]:
-    """
-    Get tier info for an aspect based on rarity and amount owned.
-    Returns (current_tier, target_tier, remaining_in_tier)
-    """
     rarity_lower = rarity.lower()
-    thresholds = TIER_THRESHOLDS.get(rarity_lower, [1, 15, 75])
-    max_amount = thresholds[-1]
 
+    tiers = {
+        "mythic":    [1, 4, 10, 0],
+        "fabled":    [1, 14, 60, 0],
+        "legendary": [1, 4, 25, 120],
+    }
+
+    t = tiers.get(rarity_lower, tiers["legendary"])
+    tier1, tier2, tier3, tier4 = t
+
+    max_amount = tier1 + tier2 + tier3 + tier4
     if amount >= max_amount:
         return (0, 0, 0)
 
-    boundaries = [0] + thresholds
+    tier2_total = tier1 + tier2
+    tier3_total = tier2_total + tier3
 
-    current_tier = 1
-    for i in range(1, len(boundaries)):
-        if amount < boundaries[i]:
-            current_tier = i
-            break
+    if amount < tier2_total:
+        progress = amount - tier1
+        remaining = tier2 - progress
+        return (1, 2, remaining)
+    elif amount < tier3_total:
+        progress = amount - tier2_total
+        remaining = tier3 - progress
+        return (2, 3, remaining)
     else:
-        current_tier = len(thresholds)
-
-    tier_start = boundaries[current_tier - 1]
-    tier_end = boundaries[current_tier]
-
-    if current_tier < len(thresholds):
-        target_tier = current_tier + 1
-        remaining = tier_end - amount
-    else:
-        target_tier = current_tier
-        remaining = max_amount - amount
-
-    return (current_tier, target_tier, remaining)
+        progress = amount - tier3_total
+        if tier4 > 0:
+            remaining = tier4 - progress
+            return (3, 4, remaining)
+        else:
+            remaining = tier3 - progress
+            return (3, 3, remaining)
 
 
 def get_tier_weight(rarity: str, current_tier: int, target_tier: int) -> float:
