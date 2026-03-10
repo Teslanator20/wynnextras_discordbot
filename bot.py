@@ -506,33 +506,33 @@ def get_tier_info(rarity: str, amount: int) -> tuple[int, int, int]:
     Returns (current_tier, target_tier, remaining_in_tier)
     """
     rarity_lower = rarity.lower()
-        thresholds = TIER_THRESHOLDS.get(rarity_lower, [1, 15, 75])
-        max_amount = thresholds[-1]
+    thresholds = TIER_THRESHOLDS.get(rarity_lower, [1, 15, 75])
+    max_amount = thresholds[-1]
 
-        if amount >= max_amount:
-            return (0, 0, 0)
+    if amount >= max_amount:
+        return (0, 0, 0)
 
-        boundaries = [0] + thresholds
+    boundaries = [0] + thresholds
 
-        current_tier = 1
-        for i in range(1, len(boundaries)):
-            if amount < boundaries[i]:
-                current_tier = i
-                break
-        else:
-            current_tier = len(thresholds)
+    current_tier = 1
+    for i in range(1, len(boundaries)):
+        if amount < boundaries[i]:
+            current_tier = i
+            break
+    else:
+        current_tier = len(thresholds)
 
-        tier_start = boundaries[current_tier - 1]
-        tier_end = boundaries[current_tier]
+    tier_start = boundaries[current_tier - 1]
+    tier_end = boundaries[current_tier]
 
-        if current_tier < len(thresholds):
-            target_tier = current_tier + 1
-            remaining = tier_end - amount
-        else:
-            target_tier = current_tier
-            remaining = max_amount - amount
+    if current_tier < len(thresholds):
+        target_tier = current_tier + 1
+        remaining = tier_end - amount
+    else:
+        target_tier = current_tier
+        remaining = max_amount - amount
 
-        return (current_tier, target_tier, remaining)
+    return (current_tier, target_tier, remaining)
 
 
 def get_tier_weight(rarity: str, current_tier: int, target_tier: int) -> float:
