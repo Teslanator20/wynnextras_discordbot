@@ -506,33 +506,33 @@ def get_tier_info(rarity: str, amount: int) -> tuple[int, int, int]:
     Returns (current_tier, target_tier, remaining_in_tier)
     """
     rarity_lower = rarity.lower()
-        thresholds = TIER_THRESHOLDS.get(rarity_lower, [1, 15, 75])
-        max_amount = thresholds[-1]
+    thresholds = TIER_THRESHOLDS.get(rarity_lower, [1, 15, 75])
+    max_amount = thresholds[-1]
 
-        if amount >= max_amount:
-            return (0, 0, 0)
+    if amount >= max_amount:
+        return (0, 0, 0)  # Maxed
 
-        boundaries = [0] + thresholds
+    # Find current tier and remaining
+    current_tier = 1
+    for i, threshold in enumerate(thresholds):
+        if amount < threshold:
+            break
+        current_tier = i + 1
 
-        current_tier = 1
-        for i in range(1, len(boundaries)):
-            if amount < boundaries[i]:
-                current_tier = i
-                break
-        else:
-            current_tier = len(thresholds)
+    # Calculate remaining in current tier progression
+    if current_tier < len(thresholds):
+        target_tier = current_tier + 1
+        tier_start = thresholds[current_tier - 1] if current_tier > 0 else 0
+        tier_end = thresholds[current_tier]
+        remaining = tier_end - amount
+    else:
+        # Working on final tier
+        target_tier = current_tier
+        tier_start = thresholds[current_tier - 1] if current_tier > 1 else 0
+        tier_end = thresholds[current_tier - 1]
+        remaining = max_amount - amount
 
-        tier_start = boundaries[current_tier - 1]
-        tier_end = boundaries[current_tier]
-
-        if current_tier < len(thresholds):
-            target_tier = current_tier + 1
-            remaining = tier_end - amount
-        else:
-            target_tier = current_tier
-            remaining = max_amount - amount
-
-        return (current_tier, target_tier, remaining)
+    return (current_tier, target_tier, remaining)
 
 
 def get_tier_weight(rarity: str, current_tier: int, target_tier: int) -> float:
