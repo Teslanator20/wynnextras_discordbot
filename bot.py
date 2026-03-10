@@ -576,7 +576,7 @@ def calculate_pool_score(pool_aspects: list, player_aspects: dict, raid_type: st
         score = calculate_aspect_score(rarity, player_amount)
         if score > 0:
             print(f"[SCORE] '{name}' ({rarity}) amount={player_amount} → {score}")
-        total_score += score
+    total_score += score
     print(f"[SCORE] TOTAL={total_score}")
     return total_score
 
