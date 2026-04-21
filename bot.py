@@ -447,9 +447,8 @@ async def fetch_wynncraft_player(uuid: str) -> dict | None:
             async with session.get(url) as resp:
                 if resp.status == 200:
                     return await resp.json()
-                else:
-                    body = await resp.text()
-                    print(f"Wynncraft API error: status={resp.status}, url={url}, body={body[:500]}")
+                elif resp.status == 403:
+                    print("403: API key invalid or no access")
                 return None
 
 

@@ -16,6 +16,7 @@ services:
     environment:
       DISCORD_TOKEN: ${DISCORD_TOKEN}
       DATABASE_URL: postgresql://postgres:wynnextras@db:5432/railway
+      WYNN_API_KEY: ${WYNN_API_KEY}
 
 volumes:
   pgdata:
