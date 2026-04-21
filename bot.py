@@ -642,6 +642,27 @@ async def get_lootpool_reset_times() -> tuple[int, int]:
     return compute_weekly_timestamps("FRIDAY", 17, 0, "UTC")
 
 
+async def get_gambit_reset_times() -> tuple[int, int]:
+    """Get Unix timestamps for last and next daily gambit reset."""
+    data = await fetch_reset_times()
+    if data and "gambit_reset" in data:
+        g = data["gambit_reset"]
+        tz = timezone.utc if g.get("timezone", "UTC").upper() == "UTC" else timezone(timedelta(hours=1))
+        now = datetime.now(tz)
+        reset_today = now.replace(hour=g["hour"], minute=g["minute"], second=0, microsecond=0)
+        if now < reset_today:
+            last_reset_dt = reset_today - timedelta(days=1)
+        else:
+            last_reset_dt = reset_today
+        next_reset_dt = last_reset_dt + timedelta(days=1)
+        return int(last_reset_dt.timestamp()), int(next_reset_dt.timestamp())
+    now = datetime.now(timezone.utc)
+    reset_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    if now < reset_today:
+        reset_today -= timedelta(days=1)
+    return int(reset_today.timestamp()), int((reset_today + timedelta(days=1)).timestamp())
+
+
 async def get_lootrun_reset_times() -> tuple[int, int]:
     """Get Unix timestamps for last and next lootrun pool reset."""
     data = await fetch_reset_times()
@@ -779,14 +800,17 @@ async def build_raidpool_reminder_embed() -> discord.Embed:
 async def build_gambits_reminder_embed() -> discord.Embed:
     """Build an embed with today's gambits for reminders."""
     data = await fetch_gambits()
+    _, next_reset = await get_gambit_reset_times()
 
-    embed = discord.Embed(title="Today's Gambits", color=0xFFD700)
+    embed = discord.Embed(
+        title="Today's Gambits",
+        description=f"**Refreshes in:** <t:{next_reset}:R>",
+        color=0xFFD700
+    )
 
     if data:
         for gambit in data.get("gambits", []):
             embed.add_field(name=gambit["name"], value=gambit["description"], inline=False)
-    else:
-        embed.description = "*No gambits available.*"
 
     return embed
 
@@ -945,7 +969,12 @@ async def gambits(interaction: discord.Interaction):
         await interaction.followup.send("No gambits available for today.", ephemeral=True)
         return
 
-    embed = discord.Embed(title="🎲 Today's Gambits", color=0xFFD700)
+    _, next_reset = await get_gambit_reset_times()
+    embed = discord.Embed(
+        title="🎲 Today's Gambits",
+        description=f"**Refreshes in:** <t:{next_reset}:R>",
+        color=0xFFD700
+    )
     for gambit in data.get("gambits", []):
         embed.add_field(name=gambit["name"], value=gambit["description"], inline=False)
     await interaction.followup.send(embed=embed)
@@ -2139,6 +2168,9 @@ def build_raids_embed(data: dict) -> discord.Embed:
     raids = global_data.get("raids", {})
     raids_list = raids.get("list", {})
     total = raids.get("total", 0)
+    guild_raids = global_data.get("guildRaids", {})
+    guild_raids_list = guild_raids.get("list", {})
+    guild_total = guild_raids.get("total", 0)
 
     raid_info = [
         ("Nest of the Grootslangs", "NOTG"),
@@ -2153,7 +2185,15 @@ def build_raids_embed(data: dict) -> discord.Embed:
         emoji = RAID_EMOJIS.get(raid_code, "")
         raid_text += f"{emoji} **{raid_name}:** {count:,}\n"
 
-    raid_text += f"\n**Total Raids:** {total:,}"
+    raid_text += f"\n**Total Raids:** {total:,}\n"
+
+    raid_text += "\n**Guild Raids**\n"
+    for raid_name, raid_code in raid_info:
+        count = guild_raids_list.get(raid_name, 0)
+        emoji = RAID_EMOJIS.get(raid_code, "")
+        raid_text += f"{emoji} **{raid_name}:** {count:,}\n"
+
+    raid_text += f"\n**Total Guild Raids:** {guild_total:,}"
     embed.description = raid_text
 
     return embed
@@ -2247,6 +2287,19 @@ def build_rankings_embed(data: dict) -> discord.Embed:
     return embed
 
 
+def format_overflow_xp(xp_percent: int) -> str:
+    xp = xp_percent * 66287449 // 100
+    if xp >= 1_000_000_000_000:
+        return f"{xp / 1_000_000_000_000:.1f}T"
+    if xp >= 1_000_000_000:
+        return f"{xp / 1_000_000_000:.1f}B"
+    if xp >= 1_000_000:
+        return f"{xp / 1_000_000:.1f}M"
+    if xp >= 1_000:
+        return f"{xp / 1_000:.1f}K"
+    return str(xp)
+
+
 def build_profs_embed(data: dict) -> discord.Embed:
     """Build the Professions tab embed showing highest level character's profs."""
     username = data.get("username", "Unknown")
@@ -2294,7 +2347,8 @@ def build_profs_embed(data: dict) -> discord.Embed:
         level = prof_data.get("level", 0)
         xp = prof_data.get("xpPercent", 0)
         maxed = "⭐ " if level >= 132 else ""
-        gathering_text += f"{maxed}**{prof.title()}:** {level}/132 ({xp}%)\n"
+        overflow = f" overflow: {format_overflow_xp(xp)}" if level >= 132 else ""
+        gathering_text += f"{maxed}**{prof.title()}:** {level}/132 ({xp}%){overflow}\n"
 
     embed.add_field(name="Gathering", value=gathering_text, inline=True)
 
@@ -2304,7 +2358,8 @@ def build_profs_embed(data: dict) -> discord.Embed:
         level = prof_data.get("level", 0)
         xp = prof_data.get("xpPercent", 0)
         maxed = "⭐ " if level >= 132 else ""
-        crafting_text += f"{maxed}**{prof.title()}:** {level}/132 ({xp}%)\n"
+        overflow = f" +{format_overflow_xp(xp)}" if level >= 132 else ""
+        crafting_text += f"{maxed}**{prof.title()}:** {level}/132 ({xp}%{overflow})\n"
 
     embed.add_field(name="Crafting", value=crafting_text, inline=True)
 
