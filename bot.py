@@ -2358,8 +2358,8 @@ def build_profs_embed(data: dict) -> discord.Embed:
         level = prof_data.get("level", 0)
         xp = prof_data.get("xpPercent", 0)
         maxed = "⭐ " if level >= 132 else ""
-        overflow = f" +{format_overflow_xp(xp)}" if level >= 132 else ""
-        crafting_text += f"{maxed}**{prof.title()}:** {level}/132 ({xp}%{overflow})\n"
+        xp_str = f"Overflow: +{format_overflow_xp(xp)}" if level >= 132 else f"{xp}%"
+        crafting_text += f"{maxed}**{prof.title()}:** {level}/132 ({xp_str})\n"
 
     embed.add_field(name="Crafting", value=crafting_text, inline=True)
 
