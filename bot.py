@@ -10,33 +10,43 @@ from datetime import datetime, timedelta, timezone, time as dt_time
 from dotenv import load_dotenv
 
 load_dotenv()
+WYNN_API_KEY = os.getenv("WYNN_API_KEY")
+
+HEADERS = {
+    "Authorization": f"Bearer {WYNN_API_KEY}"
+}
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BASE_URL = "http://wynnextras.com"
+RESET_TIME_URL = BASE_URL + "/api/reset-times"
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 # Database connection pool
 db_pool: asyncpg.Pool = None
 
-RAID_TYPES = ["NOTG", "NOL", "TCC", "TNA"]
+RAID_TYPES = ["NOTG", "NOL", "TCC", "TNA", "TWP"]
 RAID_NAMES = {
     "NOTG": "Nest of the Grootslangs",
     "NOL": "Orphion's Nexus of Light",
     "TCC": "The Canyon Colossus",
-    "TNA": "The Nameless Anomaly"
+    "TNA": "The Nameless Anomaly",
+    "TWP": "The Wartorn Palace"
 }
 
 # Lootrun types and names
-LOOTRUN_TYPES = ["SE", "SI", "MH", "CORK", "COTL"]
+LOOTRUN_TYPES = ["SE", "SI", "MH", "CORK", "COTL", "WFF", "EFF"]
 LOOTRUN_NAMES = {
     "SE": "Silent Expanse",
     "SI": "Sky Islands",
     "MH": "Molten Heights",
     "CORK": "Corkus",
-    "COTL": "Canyon of the Lost"
+    "COTL": "Canyon of the Lost",
+    "WFF": "West Fruma Foray",
+    "EFF": "East Fruma Foray"
 }
 
 LOOTRUN_EMOJIS = {
@@ -45,6 +55,8 @@ LOOTRUN_EMOJIS = {
     "MH": "<:lootrun:1466173956884136188>",
     "CORK": "<:lootrun:1466173956884136188>",
     "COTL": "<:lootrun:1466173956884136188>",
+    "WFF": "<:steam_happy:1408202005024997416>",
+    "EFF": "<:steam_happy:1408202005024997416>"
 }
 
 LOOTRUN_EMOJI_ID = 1466173956884136188
@@ -54,6 +66,7 @@ RAID_EMOJIS = {
     "NOL": "<:nol:1466160862296543458>",
     "TCC": "<:tcc:1466160902037438627>",
     "TNA": "<:tna:1466160934937432409>",
+    "TWP": "<:steam_happy:1408202005024997416>"
 }
 
 # Raid emoji IDs for reactions
@@ -62,6 +75,7 @@ RAID_EMOJI_IDS = {
     "NOL": 1466160862296543458,
     "TCC": 1466160902037438627,
     "TNA": 1466160934937432409,
+    "TWP": 1408202005024997416
 }
 
 RARITY_ORDER = {"Mythic": 0, "Fabled": 1, "Legendary": 2}
@@ -428,11 +442,14 @@ async def fetch_aspects_by_uuid(uuid: str):
 
 async def fetch_wynncraft_player(uuid: str) -> dict | None:
     """Fetch full player data from Wynncraft API."""
-    async with aiohttp.ClientSession() as session:
-        async with session.get(f"https://api.wynncraft.com/v3/player/{uuid}?fullResult") as resp:
-            if resp.status == 200:
-                return await resp.json()
-            return None
+    async with aiohttp.ClientSession(headers=HEADERS) as session:
+            url = f"https://api.wynncraft.com/v3/player/{uuid}?fullResult"
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    return await resp.json()
+                elif resp.status == 403:
+                    print("403: API key invalid or no access")
+                return None
 
 
 # Rank colors/badges
@@ -594,24 +611,44 @@ def get_aspect_emoji(required_class: str | None) -> str:
     return ASPECT_EMOJIS["warrior"]
 
 
-def get_weekly_reset_times() -> tuple[int, int]:
-    """Get Unix timestamps for last Friday 19:00 CET and next Friday 19:00 CET."""
-    # CET is UTC+1, CEST is UTC+2. Use UTC+1 for simplicity (winter time)
-    cet = timezone(timedelta(hours=1))
-    now = datetime.now(cet)
+async def fetch_reset_times() -> dict | None:
+    """Fetch reset times from the API."""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(RESET_TIME_URL) as resp:
+            return await resp.json() if resp.status == 200 else None
 
-    # Find last Friday
-    days_since_friday = (now.weekday() - 4) % 7
-    if days_since_friday == 0 and now.hour < 19:
-        days_since_friday = 7  # It's Friday but before 19:00, use last week
 
-    last_friday = now - timedelta(days=days_since_friday)
-    last_friday = last_friday.replace(hour=19, minute=0, second=0, microsecond=0)
+def compute_weekly_timestamps(day: str, hour: int, minute: int, tz_name: str) -> tuple[int, int]:
+    """Compute (last_reset, next_reset) Unix timestamps for a weekly reset."""
+    tz = timezone.utc if tz_name.upper() == "UTC" else timezone(timedelta(hours=1))
+    now = datetime.now(tz)
+    day_map = {"MONDAY": 0, "TUESDAY": 1, "WEDNESDAY": 2, "THURSDAY": 3,
+               "FRIDAY": 4, "SATURDAY": 5, "SUNDAY": 6}
+    target_weekday = day_map.get(day.upper(), 4)
+    days_since = (now.weekday() - target_weekday) % 7
+    if days_since == 0 and (now.hour < hour or (now.hour == hour and now.minute < minute)):
+        days_since = 7
+    last_reset_dt = (now - timedelta(days=days_since)).replace(hour=hour, minute=minute, second=0, microsecond=0)
+    next_reset_dt = last_reset_dt + timedelta(days=7)
+    return int(last_reset_dt.timestamp()), int(next_reset_dt.timestamp())
 
-    # Next Friday is 7 days after last Friday
-    next_friday = last_friday + timedelta(days=7)
 
-    return int(last_friday.timestamp()), int(next_friday.timestamp())
+async def get_lootpool_reset_times() -> tuple[int, int]:
+    """Get Unix timestamps for last and next lootpool (raid aspects) reset."""
+    data = await fetch_reset_times()
+    if data and "lootpool_reset" in data:
+        r = data["lootpool_reset"]
+        return compute_weekly_timestamps(r["day"], r["hour"], r["minute"], r["timezone"])
+    return compute_weekly_timestamps("FRIDAY", 17, 0, "UTC")
+
+
+async def get_lootrun_reset_times() -> tuple[int, int]:
+    """Get Unix timestamps for last and next lootrun pool reset."""
+    data = await fetch_reset_times()
+    if data and "lootrun_reset" in data:
+        r = data["lootrun_reset"]
+        return compute_weekly_timestamps(r["day"], r["hour"], r["minute"], r["timezone"])
+    return compute_weekly_timestamps("FRIDAY", 18, 0, "UTC")
 
 
 async def fetch_all_mythics() -> list[dict]:
@@ -659,12 +696,13 @@ async def on_ready():
 
 
 # Track if we've already sent reminders for this reset cycle
-_last_reminder_reset: int = 0
+_last_reminder_raidpool: int = 0
+_last_reminder_lootrun: int = 0
 
 
 async def build_lootrun_reminder_embed() -> discord.Embed:
     """Build an embed with current lootrun pools for reminders."""
-    _, next_reset = get_weekly_reset_times()
+    _, next_reset = await get_lootrun_reset_times()
     all_pools = await fetch_all_lootrun_pools()
 
     embed = discord.Embed(
@@ -691,18 +729,17 @@ async def build_lootrun_reminder_embed() -> discord.Embed:
                 mythics = [i for i in items if i.get("rarity") == "Mythic" and i.get("type") != "shiny"]
                 mythic_lines = [f"• {m.get('name', 'Unknown')}" for m in mythics]
 
+                field_lines.append("**Mythics:**")
                 field_lines = []
                 if shiny_lines:
-                    field_lines.append("**Shinies:**")
                     field_lines.extend(shiny_lines)
                 if mythic_lines:
-                    if shiny_lines:
-                        field_lines.append("")
-                    field_lines.append("**Mythics:**")
                     field_lines.extend(mythic_lines)
 
                 if not field_lines:
                     field_lines.append("*No shinies or mythics*")
+
+                field_lines.append("")
 
                 field_name = f"{LOOTRUN_EMOJIS[lr_type]} {LOOTRUN_NAMES[lr_type]}"
                 embed.add_field(name=field_name, value="\n".join(field_lines), inline=False)
@@ -712,7 +749,7 @@ async def build_lootrun_reminder_embed() -> discord.Embed:
 
 async def build_raidpool_reminder_embed() -> discord.Embed:
     """Build an embed with current raid pools for reminders."""
-    _, next_reset = get_weekly_reset_times()
+    _, next_reset = await get_lootpool_reset_times()
     mythics = await fetch_all_mythics()
 
     embed = discord.Embed(
@@ -756,78 +793,85 @@ async def build_gambits_reminder_embed() -> discord.Embed:
 
 @tasks.loop(minutes=30)
 async def reminder_check():
-    """Check if it's time to send weekly reset reminders (1 hour before Friday 19:00 CET)."""
-    global _last_reminder_reset
+    """Check if it's time to send weekly reset reminders (1 hour before each pool reset)."""
+    global _last_reminder_raidpool, _last_reminder_lootrun
     import time
 
-    cet = timezone(timedelta(hours=1))
-    now = datetime.now(cet)
-
-    # Get next reset time
-    _, next_reset = get_weekly_reset_times()
-
-    # Check if we're within 1 hour of reset and haven't sent reminders for this cycle
     current_time = int(time.time())
-    time_until_reset = next_reset - current_time
+    _, next_lootpool = await get_lootpool_reset_times()
+    _, next_lootrun = await get_lootrun_reset_times()
 
-    # Send reminders if within 1 hour (3600 seconds) but not yet sent for this reset
-    if 0 < time_until_reset <= 3600 and _last_reminder_reset != next_reset:
-        _last_reminder_reset = next_reset
-        logger.info("Sending weekly reset reminders...")
+    send_raidpool = 0 < (next_lootpool - current_time) <= 3600 and _last_reminder_raidpool != next_lootpool
+    send_lootrun = 0 < (next_lootrun - current_time) <= 3600 and _last_reminder_lootrun != next_lootrun
 
-        # Get users with raidpool or lootrunpool reminders
-        raidpool_users = await get_users_with_reminder("raidpool")
-        lootrunpool_users = await get_users_with_reminder("lootrunpool")
+    if not send_raidpool and not send_lootrun:
+        return
 
-        # Pre-build embeds once (shared across all users)
-        raidpool_embed = None
-        lootrunpool_embed = None
+    if send_raidpool:
+        _last_reminder_raidpool = next_lootpool
+    if send_lootrun:
+        _last_reminder_lootrun = next_lootrun
 
-        if raidpool_users:
-            raidpool_embed = await build_raidpool_reminder_embed()
-        if lootrunpool_users:
-            lootrunpool_embed = await build_lootrun_reminder_embed()
+    logger.info("Sending weekly reset reminders...")
 
-        # Combine unique users
-        all_users = set(raidpool_users + lootrunpool_users)
+    raidpool_users = await get_users_with_reminder("raidpool") if send_raidpool else []
+    lootrunpool_users = await get_users_with_reminder("lootrunpool") if send_lootrun else []
 
-        for discord_id in all_users:
-            try:
-                user = await bot.fetch_user(discord_id)
-                if user:
-                    reminders = await get_user_reminders(discord_id)
-                    if reminders:
-                        embeds_to_send = []
-                        if reminders.get("raidpool") and raidpool_embed:
-                            embeds_to_send.append(raidpool_embed)
-                        if reminders.get("lootrunpool") and lootrunpool_embed:
-                            embeds_to_send.append(lootrunpool_embed)
+    raidpool_embed = await build_raidpool_reminder_embed() if raidpool_users else None
+    lootrunpool_embed = await build_lootrun_reminder_embed() if lootrunpool_users else None
 
-                        if embeds_to_send:
-                            await user.send(embeds=embeds_to_send)
-                            logger.info(f"Sent reminder to user {discord_id}")
-            except Exception as e:
-                logger.error(f"Failed to send reminder to {discord_id}: {e}")
+    all_users = set(raidpool_users + lootrunpool_users)
+    for discord_id in all_users:
+        try:
+            user = await bot.fetch_user(discord_id)
+            if user:
+                reminders = await get_user_reminders(discord_id)
+                if reminders:
+                    embeds_to_send = []
+                    if reminders.get("raidpool") and raidpool_embed:
+                        embeds_to_send.append(raidpool_embed)
+                    if reminders.get("lootrunpool") and lootrunpool_embed:
+                        embeds_to_send.append(lootrunpool_embed)
+                    if embeds_to_send:
+                        await user.send(embeds=embeds_to_send)
+                        logger.info(f"Sent reminder to user {discord_id}")
+        except Exception as e:
+            logger.error(f"Failed to send reminder to {discord_id}: {e}")
 
 
 _last_known_gambits: set[str] = set()
 _gambit_reminder_sent_today: bool = False
+_gambit_trigger_date: object = None
 
 
-@tasks.loop(time=dt_time(hour=19, minute=0, second=0, tzinfo=timezone(timedelta(hours=1))))
+@tasks.loop(minutes=5)
 async def gambit_reminder_trigger():
-    """Trigger gambit polling at 19:00 CET."""
-    global _gambit_reminder_sent_today
-    _gambit_reminder_sent_today = False
-    logger.info("Starting gambit polling for new gambits...")
-    # Start the polling loop
-    if not gambit_poll_loop.is_running():
-        gambit_poll_loop.start()
+    """Trigger gambit polling around the daily gambit reset time from the API."""
+    global _gambit_reminder_sent_today, _gambit_trigger_date
+
+    reset_data = await fetch_reset_times()
+    if not reset_data or "gambit_reset" not in reset_data:
+        return
+
+    g = reset_data["gambit_reset"]
+    tz = timezone.utc if g.get("timezone", "UTC").upper() == "UTC" else timezone(timedelta(hours=1))
+    now = datetime.now(tz)
+    today = now.date()
+
+    reset_dt = now.replace(hour=g["hour"], minute=g["minute"], second=0, microsecond=0)
+    seconds_since_reset = (now - reset_dt).total_seconds()
+
+    if 0 <= seconds_since_reset < 300 and _gambit_trigger_date != today:
+        _gambit_trigger_date = today
+        _gambit_reminder_sent_today = False
+        logger.info("Starting gambit polling for new gambits...")
+        if not gambit_poll_loop.is_running():
+            gambit_poll_loop.start()
 
 
 @tasks.loop(seconds=30)
 async def gambit_poll_loop():
-    """Poll for new gambits every 30 seconds after 19:00 CET."""
+    """Poll for new gambits every 30 seconds after the gambit reset time."""
     global _last_known_gambits, _gambit_reminder_sent_today
     import asyncio
 
@@ -837,12 +881,16 @@ async def gambit_poll_loop():
         return
 
     # Timeout after 30 minutes of polling
-    cet = timezone(timedelta(hours=1))
-    now = datetime.now(cet)
-    if now.hour >= 20 or (now.hour == 19 and now.minute >= 30):
-        logger.info("Gambit polling timeout - stopping")
-        gambit_poll_loop.stop()
-        return
+    reset_data = await fetch_reset_times()
+    if reset_data and "gambit_reset" in reset_data:
+        g = reset_data["gambit_reset"]
+        tz = timezone.utc if g.get("timezone", "UTC").upper() == "UTC" else timezone(timedelta(hours=1))
+        now = datetime.now(tz)
+        reset_dt = now.replace(hour=g["hour"], minute=g["minute"], second=0, microsecond=0)
+        if (now - reset_dt).total_seconds() > 1800:
+            logger.info("Gambit polling timeout - stopping")
+            gambit_poll_loop.stop()
+            return
 
     # Fetch current gambits
     data = await fetch_gambits()
@@ -1236,7 +1284,7 @@ class BackToLootrunOverviewView(discord.ui.View):
 
 async def show_lootrun_overview(interaction: discord.Interaction, edit: bool = False, original_user_id: int = None):
     """Show the weekly lootrun pools overview."""
-    last_reset, next_reset = get_weekly_reset_times()
+    last_reset, next_reset = await get_lootrun_reset_times()
 
     # Fetch all lootrun pools
     all_pools = await fetch_all_lootrun_pools()
@@ -1435,8 +1483,7 @@ async def show_lootrun_pool(interaction: discord.Interaction, lootrun_type: str,
 
 async def show_aspects_overview(interaction: discord.Interaction, edit: bool = False, original_user_id: int = None):
     """Show the weekly loot pools overview."""
-    # Get reset timestamps
-    last_reset, next_reset = get_weekly_reset_times()
+    last_reset, next_reset = await get_lootpool_reset_times()
 
     # Fetch all mythic aspects
     mythics = await fetch_all_mythics()
@@ -1631,7 +1678,7 @@ class BackToOverviewView(discord.ui.View):
 
 async def show_aspects_overview_edit(interaction: discord.Interaction, original_user_id: int = None):
     """Show the weekly loot pools overview (edit version)."""
-    last_reset, next_reset = get_weekly_reset_times()
+    last_reset, next_reset = await get_lootpool_reset_times()
     mythics = await fetch_all_mythics()
 
     # Check if user is linked and fetch their aspects
