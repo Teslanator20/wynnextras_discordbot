@@ -2290,13 +2290,13 @@ def build_rankings_embed(data: dict) -> discord.Embed:
 def format_overflow_xp(xp_percent: int) -> str:
     xp = xp_percent * 66287449 // 100
     if xp >= 1_000_000_000_000:
-        return f"{xp / 1_000_000_000_000:.1f}T"
+        return f"{xp / 1_000_000_000_000:.2f}T"
     if xp >= 1_000_000_000:
-        return f"{xp / 1_000_000_000:.1f}B"
+        return f"{xp / 1_000_000_000:.2f}B"
     if xp >= 1_000_000:
-        return f"{xp / 1_000_000:.1f}M"
+        return f"{xp / 1_000_000:.2f}M"
     if xp >= 1_000:
-        return f"{xp / 1_000:.1f}K"
+        return f"{xp / 1_000:.2f}K"
     return str(xp)
 
 
@@ -2347,8 +2347,8 @@ def build_profs_embed(data: dict) -> discord.Embed:
         level = prof_data.get("level", 0)
         xp = prof_data.get("xpPercent", 0)
         maxed = "⭐ " if level >= 132 else ""
-        overflow = f" overflow: {format_overflow_xp(xp)}" if level >= 132 else ""
-        gathering_text += f"{maxed}**{prof.title()}:** {level}/132 ({xp}%){overflow}\n"
+        xp_str = f"Overflow: +{format_overflow_xp(xp)}" if level >= 132 else f"{xp}%"
+        gathering_text += f"{maxed}**{prof.title()}:** {level}/132 ({xp_str})\n"
 
     embed.add_field(name="Gathering", value=gathering_text, inline=True)
 
