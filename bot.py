@@ -49,24 +49,25 @@ LOOTRUN_NAMES = {
     "EFF": "East Fruma Foray"
 }
 
-LOOTRUN_EMOJIS = {
-    "SE": "<:lootrun:1466173956884136188>",
-    "SI": "<:lootrun:1466173956884136188>",
-    "MH": "<:lootrun:1466173956884136188>",
-    "CORK": "<:lootrun:1466173956884136188>",
-    "COTL": "<:lootrun:1466173956884136188>",
-    "WFF": "<:steam_happy:1408202005024997416>",
-    "EFF": "<:steam_happy:1408202005024997416>"
-}
-
 LOOTRUN_EMOJI_ID = 1466173956884136188
+LOOTRUN_EMOJI_NAME = lootrun
+
+LOOTRUN_EMOJIS = {
+    "SE": "<:LOOTRUN_EMOJI_NAME:LOOTRUN_EMOJI_ID>",
+    "SI": "<:LOOTRUN_EMOJI_NAME:LOOTRUN_EMOJI_ID>",
+    "MH": "<:LOOTRUN_EMOJI_NAME:LOOTRUN_EMOJI_ID>",
+    "CORK": "<:LOOTRUN_EMOJI_NAME:LOOTRUN_EMOJI_ID>",
+    "COTL": "<:LOOTRUN_EMOJI_NAME:LOOTRUN_EMOJI_ID>",
+    "WFF": "<:LOOTRUN_EMOJI_NAME:LOOTRUN_EMOJI_ID>",
+    "EFF": "<:LOOTRUN_EMOJI_NAME:LOOTRUN_EMOJI_ID>"
+}
 
 RAID_EMOJIS = {
     "NOTG": "<:notg:1466160820638584885>",
     "NOL": "<:nol:1466160862296543458>",
     "TCC": "<:tcc:1466160902037438627>",
     "TNA": "<:tna:1466160934937432409>",
-    "TWP": "<:steam_happy:1408202005024997416>"
+    "TWP": "<:twp:1497351981692485806>"
 }
 
 # Raid emoji IDs for reactions
@@ -1236,6 +1237,13 @@ class RaidButtonsView(discord.ui.View):
         await interaction.response.defer()
         await show_raid_pool_edit(interaction, "TNA", original_user_id=self.original_user_id)
 
+    @discord.ui.button(label="TWP", style=discord.ButtonStyle.primary, custom_id="raid_twp", emoji=discord.PartialEmoji(name="twp", id=1497351981692485806))
+    async def twp_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_user(interaction):
+            return
+        await interaction.response.defer()
+        await show_raid_pool_edit(interaction, "TWP", original_user_id=self.original_user_id)
+
 
 class LootrunButtonsView(discord.ui.View):
     """View with buttons for selecting lootruns."""
@@ -1283,6 +1291,20 @@ class LootrunButtonsView(discord.ui.View):
             return
         await interaction.response.defer()
         await show_lootrun_pool_edit(interaction, "COTL", original_user_id=self.original_user_id)
+
+    @discord.ui.button(label="West Fruma", style=discord.ButtonStyle.primary, custom_id="lootrun_wff", emoji=discord.PartialEmoji(name="lootrun", id=1466173956884136188))
+    async def wff_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_user(interaction):
+            return
+        await interaction.response.defer()
+        await show_lootrun_pool_edit(interaction, "WFF", original_user_id=self.original_user_id)
+
+    @discord.ui.button(label="East Fruma", style=discord.ButtonStyle.primary, custom_id="lootrun_eff", emoji=discord.PartialEmoji(name="lootrun", id=1466173956884136188))
+    async def eff_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._check_user(interaction):
+            return
+        await interaction.response.defer()
+        await show_lootrun_pool_edit(interaction, "EFF", original_user_id=self.original_user_id)
 
 
 class BackToLootrunOverviewView(discord.ui.View):
@@ -1590,6 +1612,7 @@ async def aspects(interaction: discord.Interaction):
     app_commands.Choice(name="Orphion's Nexus of Light (NOL)", value="NOL"),
     app_commands.Choice(name="The Canyon Colossus (TCC)", value="TCC"),
     app_commands.Choice(name="The Nameless Anomaly (TNA)", value="TNA"),
+    app_commands.Choice(name="The Wartorn Palace (TWP)", value="TWP")
 ])
 async def raidpool(interaction: discord.Interaction, raid: app_commands.Choice[str] = None):
     await interaction.response.defer()
@@ -2018,8 +2041,8 @@ async def lootpool(interaction: discord.Interaction):
         description="Choose which loot pools to view:",
         color=0x8B008B
     )
-    embed.add_field(name="Raids", value="Weekly aspect pools from NOTG, NOL, TCC, TNA", inline=False)
-    embed.add_field(name="Lootruns", value="Weekly item pools from SE, SI, MH, CORK, COTL", inline=False)
+    embed.add_field(name="Raids", value="Weekly aspect pools from NOTG, NOL, TCC, TNA, TWP", inline=False)
+    embed.add_field(name="Lootruns", value="Weekly item pools from SE, SI, MH, CORK, COTL, WFF, EFF", inline=False)
 
     await interaction.followup.send(embed=embed, view=LootPoolTypeView(original_user_id=interaction.user.id))
 
@@ -2032,6 +2055,8 @@ async def lootpool(interaction: discord.Interaction):
     app_commands.Choice(name="Molten Heights (MH)", value="MH"),
     app_commands.Choice(name="Corkus (CORK)", value="CORK"),
     app_commands.Choice(name="Canyon of the Lost (COTL)", value="COTL"),
+    app_commands.Choice(name="West Fruma Foray (WFF)", value="WFF"),
+    app_commands.Choice(name="East Fruma Foray (EFF)", value="EFF"),
 ])
 async def lootrunpool(interaction: discord.Interaction, lootrun: app_commands.Choice[str] = None):
     """View weekly lootrun loot pools."""
@@ -2168,7 +2193,7 @@ def build_raids_embed(data: dict) -> discord.Embed:
     raids = global_data.get("raids", {})
     raids_list = raids.get("list", {})
     total = raids.get("total", 0)
-    guild_raids = global_data.get("guildRaids", {})
+    guild_raids = global_data.get("guildRaids") or {}
     guild_raids_list = guild_raids.get("list", {})
     guild_total = guild_raids.get("total", 0)
 
@@ -2177,6 +2202,7 @@ def build_raids_embed(data: dict) -> discord.Embed:
         ("Orphion's Nexus of Light", "NOL"),
         ("The Canyon Colossus", "TCC"),
         ("The Nameless Anomaly", "TNA"),
+        ("The Wartorn Palace", "TWP")
     ]
 
     raid_text = ""
@@ -2225,6 +2251,7 @@ def build_rankings_embed(data: dict) -> discord.Embed:
         "orphionCompletion": "NOL",
         "colossusCompletion": "TCC",
         "namelessCompletion": "TNA",
+        "frumaCompletion": "TWP",
     }
 
     # Profession rankings
