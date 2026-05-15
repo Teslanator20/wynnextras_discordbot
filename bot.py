@@ -10,11 +10,11 @@ from datetime import datetime, timedelta, timezone, time as dt_time
 from dotenv import load_dotenv
 
 load_dotenv()
-WYNN_API_KEY = os.getenv("WYNN_API_KEY")
+#WYNN_API_KEY = os.getenv("WYNN_API_KEY")
 
-HEADERS = {
-    "Authorization": f"Bearer {WYNN_API_KEY}"
-}
+#HEADERS = {
+#    "Authorization": f"Bearer {WYNN_API_KEY}"
+#}
 
 
 # Set up logging
@@ -443,7 +443,7 @@ async def fetch_aspects_by_uuid(uuid: str):
 
 async def fetch_wynncraft_player(uuid: str) -> dict | None:
     """Fetch full player data from Wynncraft API."""
-    async with aiohttp.ClientSession(headers=HEADERS) as session:
+    async with aiohttp.ClientSession() as session:
             url = f"https://api.wynncraft.com/v3/player/{uuid}?fullResult"
             async with session.get(url) as resp:
                 if resp.status == 200:
