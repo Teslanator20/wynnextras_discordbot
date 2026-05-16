@@ -4,6 +4,7 @@ from discord.ext import commands, tasks
 import aiohttp
 import asyncpg
 import os
+import io
 import json
 import logging
 from datetime import datetime, timedelta, timezone, time as dt_time
@@ -2613,6 +2614,38 @@ async def unlink(interaction: discord.Interaction):
         await interaction.followup.send(f"✅ Unlinked from **{old_name}**.", ephemeral=True)
     else:
         await interaction.followup.send("You don't have a linked account.", ephemeral=True)
+
+
+@bot.tree.command(name="lb", description="Show the Seasonal Rating leaderboard")
+async def lb(interaction: discord.Interaction):
+    await interaction.response.defer()
+    try:
+        from playwright.async_api import async_playwright
+        async with async_playwright() as p:
+            browser = await p.chromium.launch()
+            try:
+                context = await browser.new_context(
+                    viewport={"width": 900, "height": 1200},
+                    device_scale_factor=2,
+                    color_scheme="dark",
+                )
+                page = await context.new_page()
+                await page.goto(
+                    "https://teslanator20.github.io/srlb/",
+                    wait_until="networkidle",
+                    timeout=30000,
+                )
+                await page.evaluate("document.documentElement.setAttribute('data-theme','dark')")
+                await page.evaluate(
+                    "document.querySelectorAll('#rows tr').forEach((tr, i) => { if (i >= 10) tr.style.display = 'none'; });"
+                )
+                png = await page.locator("table").screenshot(type="png")
+            finally:
+                await browser.close()
+        await interaction.followup.send(file=discord.File(io.BytesIO(png), filename="leaderboard.png"))
+    except Exception as e:
+        logger.exception("lb screenshot failed")
+        await interaction.followup.send(f"❌ Failed to capture leaderboard: {e}", ephemeral=True)
 
 
 if __name__ == "__main__":

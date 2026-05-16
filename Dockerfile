@@ -13,9 +13,8 @@ FROM python:3.11-slim
 WORKDIR /app
 
 COPY requirements.txt .
-COPY --from=builder /wheels /wheels
-RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.txt \
-    && rm -rf /wheels
+RUN pip install --no-cache-dir -r requirements.txt && \
+    playwright install --with-deps chromium
 
 COPY bot.py .
 
