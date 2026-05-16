@@ -2639,7 +2639,7 @@ async def lb(interaction: discord.Interaction):
                 return f"{n / 1_000:.0f}k"
             return str(n)
 
-        header = f"{'#':>2}  {'Guild':<22}  {'Rating':>8}  {'Lead':>8}  {'Terr':>4}"
+        header = f"{'#':>2}  {'Guild':<22}  {'Rating':>8}  {'Lead':>8}"
         lines = [header, "─" * len(header), ""]
         for i, g in enumerate(guilds):
             name = g.get("name", "")
@@ -2653,8 +2653,7 @@ async def lb(interaction: discord.Interaction):
             else:
                 lead = "—"
             lines.append(
-                f"{g.get('rank', 0):>2}  {label:<22}  {short(rating):>8}  "
-                f"{lead:>8}  {g.get('territories', 0):>4}"
+                f"{g.get('rank', 0):>2}  {label:<22}  {short(rating):>8}  {lead:>8}"
             )
             lines.append("")
 
