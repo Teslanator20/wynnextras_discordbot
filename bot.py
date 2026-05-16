@@ -2615,6 +2615,78 @@ async def unlink(interaction: discord.Interaction):
         await interaction.followup.send("You don't have a linked account.", ephemeral=True)
 
 
+@bot.tree.command(name="lb", description="Show the Seasonal Rating leaderboard")
+async def lb(interaction: discord.Interaction):
+    await interaction.response.defer()
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://teslanator20.github.io/srlb/data.json",
+                params={"_": str(int(datetime.now(timezone.utc).timestamp()))},
+                headers={"Cache-Control": "no-cache"},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.json(content_type=None)
+
+        guilds = (data.get("guilds") or [])[:10]
+        season = data.get("season", "—")
+
+        def short(n: int) -> str:
+            if n >= 1_000_000:
+                return f"{n / 1_000_000:.3f}M"
+            if n >= 1_000:
+                return f"{n / 1_000:.0f}k"
+            return str(n)
+
+        header = f"{'#':>2}  {'Guild':<22}  {'Rating':>8}  {'Lead':>8}  {'Terr':>4}"
+        lines = [header, "─" * len(header), ""]
+        for i, g in enumerate(guilds):
+            name = g.get("name", "")
+            prefix = g.get("prefix") or ""
+            label = f"[{prefix}] {name}" if prefix else name
+            if len(label) > 22:
+                label = label[:21] + "…"
+            rating = g.get("rating", 0)
+            if i + 1 < len(guilds):
+                lead = "+" + short(rating - guilds[i + 1].get("rating", 0))
+            else:
+                lead = "—"
+            lines.append(
+                f"{g.get('rank', 0):>2}  {label:<22}  {short(rating):>8}  "
+                f"{lead:>8}  {g.get('territories', 0):>4}"
+            )
+            lines.append("")
+
+        embed = discord.Embed(
+            title=f"Seasonal Rating Leaderboard — Season {season}",
+            description="```\n" + "\n".join(lines) + "\n```",
+            color=0xB8892C,
+            url="https://teslanator20.github.io/srlb/",
+        )
+        updated = data.get("updated")
+        if updated:
+            try:
+                ts = datetime.fromisoformat(updated.replace("Z", "+00:00"))
+                cet = timezone(timedelta(hours=2))  # CEST
+                local = ts.astimezone(cet)
+                now = datetime.now(cet)
+                if local.date() == now.date():
+                    when = f"today at {local.strftime('%H:%M')}"
+                elif (now.date() - local.date()).days == 1:
+                    when = f"yesterday at {local.strftime('%H:%M')}"
+                else:
+                    when = local.strftime("%d %b at %H:%M")
+                embed.set_footer(text=f"Updated {when}")
+            except Exception:
+                embed.set_footer(text=f"Updated {updated}")
+
+        await interaction.followup.send(embed=embed)
+    except Exception as e:
+        logger.exception("lb fetch failed")
+        await interaction.followup.send(f"❌ Failed to fetch leaderboard: {e}", ephemeral=True)
+
+
 if __name__ == "__main__":
     token = os.getenv("DISCORD_TOKEN")
     if not token:
