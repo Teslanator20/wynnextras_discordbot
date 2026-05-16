@@ -3,11 +3,15 @@ from discord import app_commands
 from discord.ext import commands, tasks
 import aiohttp
 import asyncpg
+import asyncio
+import base64
 import os
 import io
 import json
 import logging
+import tempfile
 from datetime import datetime, timedelta, timezone, time as dt_time
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -2616,32 +2620,146 @@ async def unlink(interaction: discord.Interaction):
         await interaction.followup.send("You don't have a linked account.", ephemeral=True)
 
 
+async def capture_leaderboard_screenshot() -> bytes:
+    """Capture the leaderboard table through Chromium's DevTools protocol."""
+    chromium_path = os.getenv("CHROMIUM_PATH", "chromium")
+    leaderboard_url = "https://teslanator20.github.io/srlb/"
+
+    with tempfile.TemporaryDirectory() as user_data_dir:
+        proc = await asyncio.create_subprocess_exec(
+            chromium_path,
+            "--headless",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            f"--user-data-dir={user_data_dir}",
+            "--remote-debugging-port=0",
+            "about:blank",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+
+        try:
+            active_port_file = Path(user_data_dir) / "DevToolsActivePort"
+            deadline = datetime.now(timezone.utc) + timedelta(seconds=10)
+            while not active_port_file.exists():
+                if datetime.now(timezone.utc) > deadline:
+                    raise TimeoutError("Chromium did not start DevTools in time")
+                await asyncio.sleep(0.1)
+
+            port = active_port_file.read_text().splitlines()[0]
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"http://127.0.0.1:{port}/json/list") as response:
+                    response.raise_for_status()
+                    targets = await response.json()
+
+                if not targets:
+                    raise RuntimeError("Chromium did not expose a page target")
+
+                ws_url = targets[0]["webSocketDebuggerUrl"]
+                async with session.ws_connect(ws_url, max_msg_size=16 * 1024 * 1024) as ws:
+                    message_id = 0
+
+                    async def cdp_call(method: str, params: dict | None = None) -> dict:
+                        nonlocal message_id
+                        message_id += 1
+                        current_id = message_id
+                        await ws.send_json({"id": current_id, "method": method, "params": params or {}})
+
+                        async for msg in ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                data = json.loads(msg.data)
+                                if data.get("id") != current_id:
+                                    continue
+                                if "error" in data:
+                                    raise RuntimeError(f"{method} failed: {data['error']}")
+                                return data.get("result", {})
+                            if msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
+                                raise RuntimeError("Chromium DevTools connection closed")
+
+                        raise RuntimeError("Chromium DevTools connection ended")
+
+                    await cdp_call("Page.enable")
+                    await cdp_call(
+                        "Emulation.setDeviceMetricsOverride",
+                        {"width": 900, "height": 1200, "deviceScaleFactor": 2, "mobile": False},
+                    )
+                    await cdp_call(
+                        "Emulation.setEmulatedMedia",
+                        {"features": [{"name": "prefers-color-scheme", "value": "dark"}]},
+                    )
+                    await cdp_call("Page.navigate", {"url": leaderboard_url})
+
+                    ready_deadline = datetime.now(timezone.utc) + timedelta(seconds=30)
+                    while True:
+                        result = await cdp_call(
+                            "Runtime.evaluate",
+                            {
+                                "expression": "document.querySelectorAll('#rows tr').length",
+                                "returnByValue": True,
+                            },
+                        )
+                        row_count = result.get("result", {}).get("value", 0)
+                        if row_count:
+                            break
+                        if datetime.now(timezone.utc) > ready_deadline:
+                            raise TimeoutError("Leaderboard table did not load in time")
+                        await asyncio.sleep(0.25)
+
+                    await cdp_call(
+                        "Runtime.evaluate",
+                        {
+                            "expression": (
+                                "document.documentElement.setAttribute('data-theme','dark');"
+                                "document.querySelectorAll('#rows tr').forEach((tr, i) => {"
+                                " if (i >= 10) tr.style.display = 'none';"
+                                "});"
+                            )
+                        },
+                    )
+                    clip_result = await cdp_call(
+                        "Runtime.evaluate",
+                        {
+                            "expression": (
+                                "(() => {"
+                                " const table = document.querySelector('table');"
+                                " const rect = table.getBoundingClientRect();"
+                                " return {"
+                                "  x: Math.max(0, rect.x + window.scrollX),"
+                                "  y: Math.max(0, rect.y + window.scrollY),"
+                                "  width: Math.ceil(rect.width),"
+                                "  height: Math.ceil(rect.height),"
+                                "  scale: 1"
+                                " };"
+                                "})()"
+                            ),
+                            "returnByValue": True,
+                        },
+                    )
+                    clip = clip_result.get("result", {}).get("value")
+                    if not clip or clip["width"] <= 0 or clip["height"] <= 0:
+                        raise RuntimeError("Leaderboard table has no visible size")
+
+                    screenshot = await cdp_call(
+                        "Page.captureScreenshot",
+                        {"format": "png", "clip": clip, "captureBeyondViewport": True},
+                    )
+                    return base64.b64decode(screenshot["data"])
+        finally:
+            if proc.returncode is None:
+                proc.terminate()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+
+
 @bot.tree.command(name="lb", description="Show the Seasonal Rating leaderboard")
 async def lb(interaction: discord.Interaction):
     await interaction.response.defer()
     try:
-        from playwright.async_api import async_playwright
-        async with async_playwright() as p:
-            browser = await p.chromium.launch()
-            try:
-                context = await browser.new_context(
-                    viewport={"width": 900, "height": 1200},
-                    device_scale_factor=2,
-                    color_scheme="dark",
-                )
-                page = await context.new_page()
-                await page.goto(
-                    "https://teslanator20.github.io/srlb/",
-                    wait_until="networkidle",
-                    timeout=30000,
-                )
-                await page.evaluate("document.documentElement.setAttribute('data-theme','dark')")
-                await page.evaluate(
-                    "document.querySelectorAll('#rows tr').forEach((tr, i) => { if (i >= 10) tr.style.display = 'none'; });"
-                )
-                png = await page.locator("table").screenshot(type="png")
-            finally:
-                await browser.close()
+        png = await capture_leaderboard_screenshot()
         await interaction.followup.send(file=discord.File(io.BytesIO(png), filename="leaderboard.png"))
     except Exception as e:
         logger.exception("lb screenshot failed")
