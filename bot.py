@@ -4,14 +4,11 @@ from discord.ext import commands, tasks
 import aiohttp
 import asyncpg
 import asyncio
-import base64
 import os
 import io
 import json
 import logging
-import tempfile
 from datetime import datetime, timedelta, timezone, time as dt_time
-from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -2620,150 +2617,135 @@ async def unlink(interaction: discord.Interaction):
         await interaction.followup.send("You don't have a linked account.", ephemeral=True)
 
 
-async def capture_leaderboard_screenshot() -> bytes:
-    """Capture the leaderboard table through Chromium's DevTools protocol."""
-    chromium_path = os.getenv("CHROMIUM_PATH", "chromium")
-    leaderboard_url = "https://teslanator20.github.io/srlb/"
+def _render_leaderboard_png(guilds: list, season) -> bytes:
+    from PIL import Image, ImageDraw, ImageFont
 
-    with tempfile.TemporaryDirectory() as user_data_dir:
-        proc = await asyncio.create_subprocess_exec(
-            chromium_path,
-            "--headless",
-            "--disable-gpu",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            f"--user-data-dir={user_data_dir}",
-            "--remote-debugging-port=0",
-            "about:blank",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
+    def short(n: int) -> str:
+        if n >= 1_000_000: return f"{n / 1_000_000:.3f}M"
+        if n >= 1_000: return f"{n / 1_000:.0f}k"
+        return str(n)
 
-        try:
-            active_port_file = Path(user_data_dir) / "DevToolsActivePort"
-            deadline = datetime.now(timezone.utc) + timedelta(seconds=10)
-            while not active_port_file.exists():
-                if datetime.now(timezone.utc) > deadline:
-                    raise TimeoutError("Chromium did not start DevTools in time")
-                await asyncio.sleep(0.1)
+    font_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        "C:/Windows/Fonts/consola.ttf",
+    ]
+    def load_font(size, bold=False):
+        for path in font_paths:
+            if bold and "Bold" not in path:
+                continue
+            try:
+                return ImageFont.truetype(path, size)
+            except OSError:
+                continue
+        for path in font_paths:
+            try:
+                return ImageFont.truetype(path, size)
+            except OSError:
+                continue
+        return ImageFont.load_default()
 
-            port = active_port_file.read_text().splitlines()[0]
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"http://127.0.0.1:{port}/json/list") as response:
-                    response.raise_for_status()
-                    targets = await response.json()
+    scale = 2
+    pad = 28 * scale
+    row_h = 44 * scale
+    header_h = 56 * scale
+    width = 760 * scale
+    rows = len(guilds)
+    height = pad * 2 + header_h + row_h * rows
 
-                if not targets:
-                    raise RuntimeError("Chromium did not expose a page target")
+    bg = (14, 13, 12)
+    ink = (232, 227, 211)
+    muted = (141, 132, 114)
+    rule = (60, 55, 45)
+    gold = (184, 137, 44)
+    silver = (168, 168, 168)
+    bronze = (177, 111, 58)
 
-                ws_url = targets[0]["webSocketDebuggerUrl"]
-                async with session.ws_connect(ws_url, max_msg_size=16 * 1024 * 1024) as ws:
-                    message_id = 0
+    img = Image.new("RGB", (width, height), bg)
+    d = ImageDraw.Draw(img)
 
-                    async def cdp_call(method: str, params: dict | None = None) -> dict:
-                        nonlocal message_id
-                        message_id += 1
-                        current_id = message_id
-                        await ws.send_json({"id": current_id, "method": method, "params": params or {}})
+    f_head = load_font(13 * scale, bold=True)
+    f_rank = load_font(20 * scale, bold=True)
+    f_name = load_font(18 * scale, bold=True)
+    f_tag = load_font(13 * scale)
+    f_num = load_font(18 * scale)
 
-                        async for msg in ws:
-                            if msg.type == aiohttp.WSMsgType.TEXT:
-                                data = json.loads(msg.data)
-                                if data.get("id") != current_id:
-                                    continue
-                                if "error" in data:
-                                    raise RuntimeError(f"{method} failed: {data['error']}")
-                                return data.get("result", {})
-                            if msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
-                                raise RuntimeError("Chromium DevTools connection closed")
+    col_rank_x = pad
+    col_name_x = pad + 60 * scale
+    col_rating_x = width - pad - 240 * scale
+    col_lead_x = width - pad
 
-                        raise RuntimeError("Chromium DevTools connection ended")
+    y = pad
+    d.text((col_rank_x, y), "№".upper(), fill=muted, font=f_head)
+    d.text((col_name_x, y), "GUILD", fill=muted, font=f_head)
+    bbox = d.textbbox((0, 0), "RATING", font=f_head)
+    d.text((col_rating_x - bbox[2] // 2, y), "RATING", fill=muted, font=f_head)
+    bbox = d.textbbox((0, 0), "LEAD", font=f_head)
+    d.text((col_lead_x - bbox[2], y), "LEAD", fill=muted, font=f_head)
+    y += header_h - 12 * scale
+    d.line([(pad, y), (width - pad, y)], fill=rule, width=2)
+    y += 12 * scale
 
-                    await cdp_call("Page.enable")
-                    await cdp_call(
-                        "Emulation.setDeviceMetricsOverride",
-                        {"width": 900, "height": 1200, "deviceScaleFactor": 2, "mobile": False},
-                    )
-                    await cdp_call(
-                        "Emulation.setEmulatedMedia",
-                        {"features": [{"name": "prefers-color-scheme", "value": "dark"}]},
-                    )
-                    await cdp_call("Page.navigate", {"url": leaderboard_url})
+    for i, g in enumerate(guilds):
+        rank = g.get("rank", 0)
+        rank_color = ink
+        if rank == 1: rank_color = gold
+        elif rank == 2: rank_color = silver
+        elif rank == 3: rank_color = bronze
 
-                    ready_deadline = datetime.now(timezone.utc) + timedelta(seconds=30)
-                    while True:
-                        result = await cdp_call(
-                            "Runtime.evaluate",
-                            {
-                                "expression": "document.querySelectorAll('#rows tr').length",
-                                "returnByValue": True,
-                            },
-                        )
-                        row_count = result.get("result", {}).get("value", 0)
-                        if row_count:
-                            break
-                        if datetime.now(timezone.utc) > ready_deadline:
-                            raise TimeoutError("Leaderboard table did not load in time")
-                        await asyncio.sleep(0.25)
+        d.text((col_rank_x, y), str(rank), fill=rank_color, font=f_rank)
 
-                    await cdp_call(
-                        "Runtime.evaluate",
-                        {
-                            "expression": (
-                                "document.documentElement.setAttribute('data-theme','dark');"
-                                "document.querySelectorAll('#rows tr').forEach((tr, i) => {"
-                                " if (i >= 10) tr.style.display = 'none';"
-                                "});"
-                            )
-                        },
-                    )
-                    clip_result = await cdp_call(
-                        "Runtime.evaluate",
-                        {
-                            "expression": (
-                                "(() => {"
-                                " const table = document.querySelector('table');"
-                                " const rect = table.getBoundingClientRect();"
-                                " return {"
-                                "  x: Math.max(0, rect.x + window.scrollX),"
-                                "  y: Math.max(0, rect.y + window.scrollY),"
-                                "  width: Math.ceil(rect.width),"
-                                "  height: Math.ceil(rect.height),"
-                                "  scale: 1"
-                                " };"
-                                "})()"
-                            ),
-                            "returnByValue": True,
-                        },
-                    )
-                    clip = clip_result.get("result", {}).get("value")
-                    if not clip or clip["width"] <= 0 or clip["height"] <= 0:
-                        raise RuntimeError("Leaderboard table has no visible size")
+        name = g.get("name", "")
+        prefix = g.get("prefix") or ""
+        d.text((col_name_x, y), name, fill=ink, font=f_name)
+        if prefix:
+            bbox = d.textbbox((0, 0), name, font=f_name)
+            d.text((col_name_x + bbox[2] + 8 * scale, y + 6 * scale), prefix, fill=muted, font=f_tag)
 
-                    screenshot = await cdp_call(
-                        "Page.captureScreenshot",
-                        {"format": "png", "clip": clip, "captureBeyondViewport": True},
-                    )
-                    return base64.b64decode(screenshot["data"])
-        finally:
-            if proc.returncode is None:
-                proc.terminate()
-                try:
-                    await asyncio.wait_for(proc.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    await proc.wait()
+        rating_str = short(g.get("rating", 0))
+        bbox = d.textbbox((0, 0), rating_str, font=f_num)
+        d.text((col_rating_x - bbox[2] // 2, y), rating_str, fill=ink, font=f_num)
+
+        if i + 1 < len(guilds):
+            lead = "+" + short(g.get("rating", 0) - guilds[i + 1].get("rating", 0))
+        else:
+            lead = "—"
+        bbox = d.textbbox((0, 0), lead, font=f_num)
+        d.text((col_lead_x - bbox[2], y), lead, fill=muted, font=f_num)
+
+        y += row_h
+        if i < len(guilds) - 1:
+            d.line([(pad, y - 8 * scale), (width - pad, y - 8 * scale)], fill=rule, width=1)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
 
 
 @bot.tree.command(name="lb", description="Show the Seasonal Rating leaderboard")
 async def lb(interaction: discord.Interaction):
     await interaction.response.defer()
     try:
-        png = await capture_leaderboard_screenshot()
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                "https://teslanator20.github.io/srlb/data.json",
+                params={"_": str(int(datetime.now(timezone.utc).timestamp()))},
+                headers={"Cache-Control": "no-cache"},
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.json(content_type=None)
+
+        guilds = (data.get("guilds") or [])[:10]
+        season = data.get("season", "—")
+
+        loop = asyncio.get_running_loop()
+        png = await loop.run_in_executor(None, _render_leaderboard_png, guilds, season)
+
         await interaction.followup.send(file=discord.File(io.BytesIO(png), filename="leaderboard.png"))
     except Exception as e:
-        logger.exception("lb screenshot failed")
-        await interaction.followup.send(f"❌ Failed to capture leaderboard: {e}", ephemeral=True)
+        logger.exception("lb render failed")
+        await interaction.followup.send(f"❌ Failed to render leaderboard: {e}", ephemeral=True)
 
 
 if __name__ == "__main__":
