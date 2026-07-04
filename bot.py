@@ -8,6 +8,7 @@ import os
 import io
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone, time as dt_time
 from dotenv import load_dotenv
 
@@ -172,7 +173,15 @@ VALID_DUNGEONS = {
 }
 
 intents = discord.Intents.default()
+intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+SCAM_ALERT_CHANNEL_ID = 1405529146351812829
+SCAM_ALERT_USER_ID = 716048545232322631
+SCAM_TIMEOUT_HOURS = 24
+SCAM_HISTORY_LOOKBACK_DAYS = 7
+SCAM_EXEMPT_ROLE_IDS = {1405300349593718825, 1422941958778916904, 1468934602554085490}
+IMAGE_ATTACHMENT_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".avif")
 
 
 # === User Linking (PostgreSQL) ===
@@ -693,6 +702,216 @@ async def fetch_all_mythics() -> list[dict]:
     return all_mythics
 
 
+def has_image_attachment(message: discord.Message) -> bool:
+    """Return True if the message has at least one uploaded image attachment."""
+    for attachment in message.attachments:
+        if attachment.content_type and attachment.content_type.lower().startswith("image/"):
+            return True
+        filename = (attachment.filename or "").lower()
+        if filename.endswith(IMAGE_ATTACHMENT_EXTENSIONS):
+            return True
+    return False
+
+
+def content_without_pings(message: discord.Message) -> str:
+    """Remove user/role pings from message content before checking for real text."""
+    content = message.content or ""
+    for user_id in message.raw_mentions:
+        content = re.sub(rf"<@!?{user_id}>", "", content)
+    for role_id in message.raw_role_mentions:
+        content = re.sub(rf"<@&{role_id}>", "", content)
+    content = re.sub(r"@(everyone|here)", "", content, flags=re.IGNORECASE)
+    return content.strip()
+
+
+def should_skip_scam_check(message: discord.Message) -> bool:
+    if not message.guild or not isinstance(message.author, discord.Member):
+        return True
+    if message.author.bot or message.webhook_id is not None:
+        return True
+    if message.author.id == message.guild.owner_id:
+        return True
+    if any(role.id in SCAM_EXEMPT_ROLE_IDS for role in message.author.roles):
+        return True
+
+    permissions = message.author.guild_permissions
+    return any((
+        permissions.administrator,
+        permissions.manage_messages,
+        permissions.moderate_members,
+        permissions.kick_members,
+        permissions.ban_members,
+    ))
+
+
+def matches_scam_image_format(message: discord.Message) -> bool:
+    return has_image_attachment(message) and not content_without_pings(message)
+
+
+async def user_has_previous_message(message: discord.Message) -> tuple[bool, dict]:
+    guild = message.guild
+    if not guild or not isinstance(message.author, discord.Member):
+        return False, {"scanned": 0, "skipped": [], "since": None}
+
+    now = datetime.now(timezone.utc)
+    joined_at = message.author.joined_at or (now - timedelta(days=SCAM_HISTORY_LOOKBACK_DAYS))
+    since = max(joined_at, now - timedelta(days=SCAM_HISTORY_LOOKBACK_DAYS))
+    bot_member = guild.me
+
+    scanned_channels = 0
+    skipped_channels: list[str] = []
+
+    for channel in guild.text_channels:
+        if bot_member is None:
+            skipped_channels.append(channel.name)
+            continue
+
+        perms = channel.permissions_for(bot_member)
+        if not (perms.view_channel and perms.read_message_history):
+            skipped_channels.append(channel.name)
+            continue
+
+        scanned_channels += 1
+        try:
+            async for previous in channel.history(
+                limit=None,
+                after=since,
+                before=message.created_at,
+                oldest_first=False,
+            ):
+                if previous.author.id == message.author.id and previous.id != message.id:
+                    return True, {
+                        "scanned": scanned_channels,
+                        "skipped": skipped_channels,
+                        "since": since,
+                        "previous_channel": channel,
+                        "previous_message_id": previous.id,
+                    }
+        except (discord.Forbidden, discord.HTTPException) as e:
+            skipped_channels.append(f"{channel.name} ({type(e).__name__})")
+
+    return False, {"scanned": scanned_channels, "skipped": skipped_channels, "since": since}
+
+
+async def send_scam_dm(member: discord.Member, guild: discord.Guild) -> tuple[bool, str]:
+    try:
+        await member.send(
+            f"Your message in **{guild.name}** was flagged by the server's scam protection because it "
+            "contained image attachment(s) without any text. You have been timed out for 24 hours. "
+            "If this was a mistake, a moderator has been notified and can remove the timeout."
+        )
+        return True, "sent"
+    except discord.Forbidden:
+        return False, "DMs closed"
+    except discord.HTTPException as e:
+        return False, f"failed: {e}"
+
+
+async def send_scam_alert(
+    message: discord.Message,
+    deleted: tuple[bool, str],
+    timed_out: tuple[bool, str],
+    dm_sent: tuple[bool, str],
+    scan_info: dict,
+):
+    alert_channel = bot.get_channel(SCAM_ALERT_CHANNEL_ID)
+    if alert_channel is None:
+        try:
+            alert_channel = await bot.fetch_channel(SCAM_ALERT_CHANNEL_ID)
+        except discord.HTTPException as e:
+            logger.error(f"Could not fetch scam alert channel: {e}")
+            return
+
+    if not isinstance(alert_channel, discord.abc.Messageable):
+        logger.error("Scam alert channel is not messageable")
+        return
+
+    member = message.author
+    attachment_lines = []
+    for attachment in message.attachments:
+        attachment_lines.append(f"[{attachment.filename}]({attachment.url})")
+
+    since = scan_info.get("since")
+    skipped = scan_info.get("skipped") or []
+
+    embed = discord.Embed(
+        title="Scam protection triggered",
+        description="A user's first found message matched the image-without-text rule.",
+        color=0xFF5555,
+        timestamp=datetime.now(timezone.utc),
+    )
+    embed.add_field(name="User", value=f"{member.mention}\n`{member.id}`", inline=True)
+    embed.add_field(name="Channel", value=f"{message.channel.mention}\n`{message.channel.id}`", inline=True)
+    embed.add_field(name="Message ID", value=f"`{message.id}`", inline=True)
+    embed.add_field(name="Account created", value=f"<t:{int(member.created_at.timestamp())}:F>", inline=True)
+    if isinstance(member, discord.Member) and member.joined_at:
+        embed.add_field(name="Joined server", value=f"<t:{int(member.joined_at.timestamp())}:F>", inline=True)
+    embed.add_field(name="Delete", value=deleted[1], inline=True)
+    embed.add_field(name="Timeout", value=timed_out[1], inline=True)
+    embed.add_field(name="DM", value=dm_sent[1], inline=True)
+    scan_value = f"{scan_info.get('scanned', 0)} channel(s)"
+    if since:
+        scan_value += f"\nsince <t:{int(since.timestamp())}:F>"
+    if skipped:
+        scan_value += f"\nskipped: {', '.join(skipped[:5])}"
+        if len(skipped) > 5:
+            scan_value += f", +{len(skipped) - 5} more"
+    embed.add_field(name="History scan", value=scan_value, inline=False)
+    embed.add_field(
+        name="Attachments",
+        value="\n".join(attachment_lines)[:1024] if attachment_lines else "None",
+        inline=False,
+    )
+
+    try:
+        await alert_channel.send(
+            content=f"<@{SCAM_ALERT_USER_ID}>",
+            embed=embed,
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
+    except discord.HTTPException as e:
+        logger.error(f"Could not send scam alert: {e}")
+
+
+async def handle_scam_image_message(message: discord.Message) -> bool:
+    if should_skip_scam_check(message) or not matches_scam_image_format(message):
+        return False
+
+    has_previous_message, scan_info = await user_has_previous_message(message)
+    if has_previous_message:
+        return False
+
+    deleted = (False, "not attempted")
+    timed_out = (False, "not attempted")
+    dm_sent = (False, "not attempted")
+
+    if isinstance(message.author, discord.Member):
+        dm_sent = await send_scam_dm(message.author, message.guild)
+
+    try:
+        await message.delete(reason="Scam protection: first found message contained image(s) without text")
+        deleted = (True, "deleted")
+    except discord.Forbidden:
+        deleted = (False, "missing Manage Messages")
+    except discord.NotFound:
+        deleted = (False, "already deleted")
+    except discord.HTTPException as e:
+        deleted = (False, f"failed: {e}")
+
+    if isinstance(message.author, discord.Member):
+        until = datetime.now(timezone.utc) + timedelta(hours=SCAM_TIMEOUT_HOURS)
+        try:
+            await message.author.timeout(until, reason="Scam protection: first found message contained image(s) without text")
+            timed_out = (True, "timed out for 24h")
+        except discord.Forbidden:
+            timed_out = (False, "missing Moderate Members or role too low")
+        except discord.HTTPException as e:
+            timed_out = (False, f"failed: {e}")
+
+    await send_scam_alert(message, deleted, timed_out, dm_sent, scan_info)
+    return True
+
+
 # === Bot Events ===
 @bot.event
 async def on_ready():
@@ -717,6 +936,18 @@ async def on_ready():
         reminder_check.start()
     if not gambit_reminder_trigger.is_running():
         gambit_reminder_trigger.start()
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    handled = False
+    try:
+        handled = await handle_scam_image_message(message)
+    except Exception:
+        logger.exception("Scam protection check failed")
+
+    if not handled:
+        await bot.process_commands(message)
 
 
 # Track if we've already sent reminders for this reset cycle
