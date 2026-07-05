@@ -182,6 +182,8 @@ SCAM_TIMEOUT_HOURS = 24
 SCAM_HISTORY_LOOKBACK_DAYS = 7
 SCAM_EXEMPT_ROLE_IDS = {1405300349593718825, 1422941958778916904, 1468934602554085490}
 IMAGE_ATTACHMENT_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".avif")
+SCAM_PREVIEW_MAX_FILES = 10
+SCAM_PREVIEW_MAX_TOTAL_BYTES = 20 * 1024 * 1024
 
 
 # === User Linking (PostgreSQL) ===
@@ -705,12 +707,16 @@ async def fetch_all_mythics() -> list[dict]:
 def has_image_attachment(message: discord.Message) -> bool:
     """Return True if the message has at least one uploaded image attachment."""
     for attachment in message.attachments:
-        if attachment.content_type and attachment.content_type.lower().startswith("image/"):
-            return True
-        filename = (attachment.filename or "").lower()
-        if filename.endswith(IMAGE_ATTACHMENT_EXTENSIONS):
+        if is_image_attachment(attachment):
             return True
     return False
+
+
+def is_image_attachment(attachment: discord.Attachment) -> bool:
+    if attachment.content_type and attachment.content_type.lower().startswith("image/"):
+        return True
+    filename = (attachment.filename or "").lower()
+    return filename.endswith(IMAGE_ATTACHMENT_EXTENSIONS)
 
 
 def content_without_pings(message: discord.Message) -> str:
@@ -807,11 +813,49 @@ async def send_scam_dm(member: discord.Member, guild: discord.Guild) -> tuple[bo
         return False, f"failed: {e}"
 
 
+async def build_scam_preview_files(message: discord.Message) -> tuple[list[discord.File], str]:
+    files: list[discord.File] = []
+    total_size = 0
+    skipped = 0
+
+    for attachment in message.attachments:
+        if not is_image_attachment(attachment):
+            continue
+        if len(files) >= SCAM_PREVIEW_MAX_FILES:
+            skipped += 1
+            continue
+        if total_size + attachment.size > SCAM_PREVIEW_MAX_TOTAL_BYTES:
+            skipped += 1
+            continue
+
+        try:
+            data = await attachment.read()
+        except discord.HTTPException:
+            skipped += 1
+            continue
+
+        total_size += len(data)
+        extension = os.path.splitext(attachment.filename or "")[1].lower()
+        if extension not in IMAGE_ATTACHMENT_EXTENSIONS:
+            extension = ".png"
+        filename = f"scam_preview_{len(files) + 1}{extension}"
+        files.append(discord.File(io.BytesIO(data), filename=filename))
+
+    if not files:
+        return files, "no preview files attached"
+    status = f"{len(files)} preview file(s) attached"
+    if skipped:
+        status += f", {skipped} skipped"
+    return files, status
+
+
 async def send_scam_alert(
     message: discord.Message,
     deleted: tuple[bool, str],
     timed_out: tuple[bool, str],
     dm_sent: tuple[bool, str],
+    preview_status: str,
+    preview_files: list[discord.File],
     scan_info: dict,
 ):
     alert_channel = bot.get_channel(SCAM_ALERT_CHANNEL_ID)
@@ -849,6 +893,7 @@ async def send_scam_alert(
     embed.add_field(name="Delete", value=deleted[1], inline=True)
     embed.add_field(name="Timeout", value=timed_out[1], inline=True)
     embed.add_field(name="DM", value=dm_sent[1], inline=True)
+    embed.add_field(name="Preview", value=preview_status, inline=True)
     scan_value = f"{scan_info.get('scanned', 0)} channel(s)"
     if since:
         scan_value += f"\nsince <t:{int(since.timestamp())}:F>"
@@ -862,15 +907,26 @@ async def send_scam_alert(
         value="\n".join(attachment_lines)[:1024] if attachment_lines else "None",
         inline=False,
     )
+    if preview_files:
+        embed.set_image(url=f"attachment://{preview_files[0].filename}")
 
     try:
         await alert_channel.send(
             content=f"<@{SCAM_ALERT_USER_ID}>",
             embed=embed,
+            files=preview_files,
             allowed_mentions=discord.AllowedMentions(users=True),
         )
     except discord.HTTPException as e:
-        logger.error(f"Could not send scam alert: {e}")
+        logger.error(f"Could not send scam alert with preview files: {e}")
+        try:
+            await alert_channel.send(
+                content=f"<@{SCAM_ALERT_USER_ID}>\nPreview upload failed: `{type(e).__name__}`",
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
+        except discord.HTTPException as fallback_error:
+            logger.error(f"Could not send scam alert: {fallback_error}")
 
 
 async def handle_scam_image_message(message: discord.Message) -> bool:
@@ -884,6 +940,7 @@ async def handle_scam_image_message(message: discord.Message) -> bool:
     deleted = (False, "not attempted")
     timed_out = (False, "not attempted")
     dm_sent = (False, "not attempted")
+    preview_files, preview_status = await build_scam_preview_files(message)
 
     if isinstance(message.author, discord.Member):
         dm_sent = await send_scam_dm(message.author, message.guild)
@@ -908,7 +965,7 @@ async def handle_scam_image_message(message: discord.Message) -> bool:
         except discord.HTTPException as e:
             timed_out = (False, f"failed: {e}")
 
-    await send_scam_alert(message, deleted, timed_out, dm_sent, scan_info)
+    await send_scam_alert(message, deleted, timed_out, dm_sent, preview_status, preview_files, scan_info)
     return True
 
 
