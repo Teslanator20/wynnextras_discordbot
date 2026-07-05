@@ -889,7 +889,7 @@ async def handle_scam_image_message(message: discord.Message) -> bool:
         dm_sent = await send_scam_dm(message.author, message.guild)
 
     try:
-        await message.delete(reason="Scam protection: first found message contained image(s) without text")
+        await message.delete()
         deleted = (True, "deleted")
     except discord.Forbidden:
         deleted = (False, "missing Manage Messages")
