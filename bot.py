@@ -178,6 +178,7 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 SCAM_ALERT_CHANNEL_ID = 1405529146351812829
 SCAM_ALERT_USER_ID = 716048545232322631
+SCAM_PROTECTION_GUILD_ID = 1405216351865536522
 SCAM_TIMEOUT_HOURS = 24
 SCAM_HISTORY_LOOKBACK_DAYS = 7
 SCAM_EXEMPT_ROLE_IDS = {1405300349593718825, 1422941958778916904, 1468934602554085490}
@@ -732,6 +733,8 @@ def content_without_pings(message: discord.Message) -> str:
 
 def should_skip_scam_check(message: discord.Message) -> bool:
     if not message.guild or not isinstance(message.author, discord.Member):
+        return True
+    if message.guild.id != SCAM_PROTECTION_GUILD_ID:
         return True
     if message.author.bot or message.webhook_id is not None:
         return True
