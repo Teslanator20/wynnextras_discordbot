@@ -181,6 +181,7 @@ SCAM_ALERT_USER_ID = 716048545232322631
 SCAM_PROTECTION_GUILD_ID = 1405216351865536522
 SCAM_TIMEOUT_HOURS = 24
 SCAM_HISTORY_LOOKBACK_DAYS = 7
+SCAM_HISTORY_EXCLUDED_CHANNEL_IDS = {1405216353589399634}
 SCAM_EXEMPT_ROLE_IDS = {1405300349593718825, 1422941958778916904, 1468934602554085490}
 IMAGE_ATTACHMENT_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".avif")
 SCAM_PREVIEW_MAX_FILES = 10
@@ -760,7 +761,7 @@ def matches_scam_image_format(message: discord.Message) -> bool:
 async def user_has_previous_message(message: discord.Message) -> tuple[bool, dict]:
     guild = message.guild
     if not guild or not isinstance(message.author, discord.Member):
-        return False, {"scanned": 0, "skipped": [], "since": None}
+        return False, {"scanned": 0, "skipped": [], "excluded": [], "since": None}
 
     now = datetime.now(timezone.utc)
     joined_at = message.author.joined_at or (now - timedelta(days=SCAM_HISTORY_LOOKBACK_DAYS))
@@ -769,8 +770,13 @@ async def user_has_previous_message(message: discord.Message) -> tuple[bool, dic
 
     scanned_channels = 0
     skipped_channels: list[str] = []
+    excluded_channels: list[str] = []
 
     for channel in guild.text_channels:
+        if channel.id in SCAM_HISTORY_EXCLUDED_CHANNEL_IDS:
+            excluded_channels.append(channel.name)
+            continue
+
         if bot_member is None:
             skipped_channels.append(channel.name)
             continue
@@ -792,6 +798,7 @@ async def user_has_previous_message(message: discord.Message) -> tuple[bool, dic
                     return True, {
                         "scanned": scanned_channels,
                         "skipped": skipped_channels,
+                        "excluded": excluded_channels,
                         "since": since,
                         "previous_channel": channel,
                         "previous_message_id": previous.id,
@@ -799,7 +806,7 @@ async def user_has_previous_message(message: discord.Message) -> tuple[bool, dic
         except (discord.Forbidden, discord.HTTPException) as e:
             skipped_channels.append(f"{channel.name} ({type(e).__name__})")
 
-    return False, {"scanned": scanned_channels, "skipped": skipped_channels, "since": since}
+    return False, {"scanned": scanned_channels, "skipped": skipped_channels, "excluded": excluded_channels, "since": since}
 
 
 async def send_scam_dm(member: discord.Member, guild: discord.Guild) -> tuple[bool, str]:
@@ -880,6 +887,7 @@ async def send_scam_alert(
 
     since = scan_info.get("since")
     skipped = scan_info.get("skipped") or []
+    excluded = scan_info.get("excluded") or []
 
     embed = discord.Embed(
         title="Scam protection triggered",
@@ -904,6 +912,10 @@ async def send_scam_alert(
         scan_value += f"\nskipped: {', '.join(skipped[:5])}"
         if len(skipped) > 5:
             scan_value += f", +{len(skipped) - 5} more"
+    if excluded:
+        scan_value += f"\nexcluded: {', '.join(excluded[:5])}"
+        if len(excluded) > 5:
+            scan_value += f", +{len(excluded) - 5} more"
     embed.add_field(name="History scan", value=scan_value, inline=False)
     embed.add_field(
         name="Attachments",
